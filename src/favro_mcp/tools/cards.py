@@ -363,7 +363,7 @@ def update_card(
     archived: bool | None = None,
     custom_fields: list[dict[str, Any]] | None = None,
     tasks: list[dict[str, Any]] | None = None,
-    add_tasklist: str | None = None,
+    add_tasklist: dict[str, Any] | None = None,
     add_task: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Update a card's properties.
@@ -384,7 +384,8 @@ def update_card(
             - Status: {'customFieldId': '...', 'value': ['itemId1', 'itemId2']}
         tasks: List of task updates. Each dict should contain 'task_id' and optionally
             'completed' (bool) or 'name' (str) to update
-        add_tasklist: Name of a new task list to create on this card
+        add_tasklist: Create a new task list with optional inline tasks:
+            {'name': 'My list', 'tasks': [{'name': 'Task 1'}, {'name': 'Task 2', 'completed': true}]}
         add_task: Create a new task: {'tasklist_id': '...', 'name': '...'}
 
     Returns:
@@ -425,8 +426,16 @@ def update_card(
 
         # Create new task list if specified
         if add_tasklist:
-            new_tasklist = client.create_tasklist(c.card_common_id, add_tasklist)
-            messages.append(f"Created task list: {new_tasklist.name}")
+            tl_name = add_tasklist.get("name", "")
+            tl_tasks = add_tasklist.get("tasks")
+            new_tasklist = client.create_tasklist(
+                c.card_common_id, tl_name, tasks=tl_tasks
+            )
+            task_count = len(new_tasklist.tasks) if new_tasklist.tasks else 0
+            msg = f"Created task list: {new_tasklist.name}"
+            if task_count:
+                msg += f" ({task_count} tasks)"
+            messages.append(msg)
 
         # Create new task if specified
         if add_task:

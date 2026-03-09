@@ -558,12 +558,25 @@ class FavroClient:
         return [TaskList.model_validate(e) for e in entities]
 
     def create_tasklist(
-        self, card_common_id: str, name: str, position: int | None = None
+        self,
+        card_common_id: str,
+        name: str,
+        position: int | None = None,
+        tasks: list[dict[str, Any]] | None = None,
     ) -> TaskList:
-        """Create a new task list on a card."""
+        """Create a new task list on a card.
+
+        Args:
+            card_common_id: The card to create the task list on.
+            name: The name of the task list.
+            position: Optional ordering position.
+            tasks: Optional list of task dicts with 'name' and optional 'completed'.
+        """
         data: dict[str, Any] = {"cardCommonId": card_common_id, "name": name}
         if position is not None:
             data["position"] = position
+        if tasks:
+            data["tasks"] = tasks
         result = self._post("/tasklists", data)
         return TaskList.model_validate(result)
 

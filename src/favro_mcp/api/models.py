@@ -170,6 +170,7 @@ class TaskList(BaseModel):
     card_common_id: str = Field(alias="cardCommonId")
     name: str
     position: float
+    tasks: list[dict[str, Any]] | None = None
 
 
 class Task(BaseModel):
