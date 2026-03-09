@@ -365,6 +365,7 @@ def update_card(
     tasks: list[dict[str, Any]] | None = None,
     add_tasklist: dict[str, Any] | None = None,
     add_task: dict[str, Any] | None = None,
+    delete_tasklist: str | None = None,
 ) -> dict[str, Any]:
     """Update a card's properties.
 
@@ -387,6 +388,7 @@ def update_card(
         add_tasklist: Create a new task list with optional inline tasks:
             {'name': 'My list', 'tasks': [{'name': 'Task 1'}, {'name': 'Task 2', 'completed': true}]}
         add_task: Create a new task: {'tasklist_id': '...', 'name': '...'}
+        delete_tasklist: Task list ID to delete
 
     Returns:
         The updated card details
@@ -444,6 +446,11 @@ def update_card(
             if tasklist_id and task_name:
                 new_task = client.create_task(tasklist_id, task_name)
                 messages.append(f"Created task: {new_task.name}")
+
+        # Delete task list if specified
+        if delete_tasklist:
+            client.delete_tasklist(delete_tasklist)
+            messages.append(f"Deleted task list: {delete_tasklist}")
 
         return {
             "message": "; ".join(messages),

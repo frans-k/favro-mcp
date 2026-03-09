@@ -580,6 +580,10 @@ class FavroClient:
         result = self._post("/tasklists", data)
         return TaskList.model_validate(result)
 
+    def delete_tasklist(self, tasklist_id: str) -> None:
+        """Delete a task list."""
+        self._delete(f"/tasklists/{tasklist_id}")
+
     # Task methods
     def get_tasks(self, card_common_id: str, tasklist_id: str | None = None) -> list[Task]:
         """Get all tasks for a card, optionally filtered by task list."""
