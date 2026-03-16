@@ -354,44 +354,18 @@ def create_card(
 
 
 @mcp.tool
-def update_card(
-    card: str,
-    ctx: Context,
-    board: str | None = None,
-    name: str | None = None,
-    description: str | None = None,
-    archived: bool | None = None,
-    custom_fields: list[dict[str, Any]] | None = None,
-    tasks: list[dict[str, Any]] | None = None,
-    add_tasklist: dict[str, Any] | None = None,
-    add_task: dict[str, Any] | None = None,
-    delete_tasklist: str | None = None,
-) -> dict[str, Any]:
-    """Update a card's properties.
+def set_card(card: str, ctx: Context, board: str | None = None) -> dict[str, Any]:
+    """Select a card as the active card for subsequent operations.
+
+    This sets the default card for update operations such as update_card,
+    set_custom_fields, update_tasks, create_tasklist, create_task, and delete_tasklist.
 
     Args:
         card: Card ID, sequential ID (#123), or name
-        board: Board ID or name (needed for sequential ID or name lookup)
-        name: New card name
-        description: New detailed description
-        archived: Archive or unarchive the card
-        custom_fields: List of custom field updates. Each dict should contain
-            'customFieldId' and the appropriate value field for the field type:
-            - Text: {'customFieldId': '...', 'value': 'text'}
-            - Number/Rating: {'customFieldId': '...', 'total': 5}
-            - Link: {'customFieldId': '...', 'link': {'url': '...', 'text': '...'}}
-            - Checkbox: {'customFieldId': '...', 'value': True}
-            - Date: {'customFieldId': '...', 'value': '2024-01-15'}
-            - Status: {'customFieldId': '...', 'value': ['itemId1', 'itemId2']}
-        tasks: List of task updates. Each dict should contain 'task_id' and optionally
-            'completed' (bool) or 'name' (str) to update
-        add_tasklist: Create a new task list with optional inline tasks:
-            {'name': 'My list', 'tasks': [{'name': 'Task 1'}, {'name': 'Task 2', 'completed': true}]}
-        add_task: Create a new task: {'tasklist_id': '...', 'name': '...'}
-        delete_tasklist: Task list ID to delete
+        board: Board ID or name (needed for name lookups; uses current board if omitted)
 
     Returns:
-        The updated card details
+        The selected card details
     """
     favro_ctx = get_favro_context(ctx)
     favro_ctx.require_org()
@@ -401,63 +375,251 @@ def update_card(
             board_id = BoardResolver(client).resolve(board).widget_common_id
 
         c = CardResolver(client).resolve(card, board_id=board_id)
+        favro_ctx.current_card_id = c.card_common_id
 
-        # Update the card itself
+        return {
+            "message": f"Selected card #{c.sequential_id}: {c.name}",
+            "card_common_id": c.card_common_id,
+            "sequential_id": c.sequential_id,
+            "name": c.name,
+        }
+
+
+@mcp.tool
+def get_current_card(ctx: Context) -> dict[str, Any]:
+    """Get details of the currently selected card.
+
+    Returns:
+        Full card details, or a message if no card is selected.
+    """
+    favro_ctx = get_favro_context(ctx)
+    if not favro_ctx.current_card_id:
+        return {"message": "No card selected. Use set_card tool first."}
+
+    favro_ctx.require_org()
+    with favro_ctx.get_client() as client:
+        c = CardResolver(client).resolve(favro_ctx.current_card_id)
+
+        tasklists_data: list[dict[str, Any]] = []
+        tasklists = client.get_tasklists(c.card_common_id)
+        for tasklist in tasklists:
+            tasks = client.get_tasks(c.card_common_id, tasklist.tasklist_id)
+            tasklists_data.append(
+                {
+                    "tasklist_id": tasklist.tasklist_id,
+                    "name": tasklist.name,
+                    "position": tasklist.position,
+                    "tasks": [
+                        {
+                            "task_id": task.task_id,
+                            "name": task.name,
+                            "completed": task.completed,
+                            "position": task.position,
+                        }
+                        for task in tasks
+                    ],
+                }
+            )
+
+        result = _card_to_dict(c)
+        result["tasklists"] = tasklists_data
+        result["detailed_description"] = _strip_tasklist_from_description(
+            result["detailed_description"], tasklists_data
+        )
+        return result
+
+
+@mcp.tool
+def update_card(
+    ctx: Context,
+    name: str | None = None,
+    description: str | None = None,
+    archived: bool | None = None,
+) -> dict[str, Any]:
+    """Update basic properties of the selected card.
+
+    Requires a card to be selected with set_card first.
+
+    Args:
+        name: New card name
+        description: New detailed description (supports markdown)
+        archived: Archive (True) or unarchive (False) the card
+
+    Returns:
+        The updated card details
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    card_common_id = favro_ctx.require_card()
+    with favro_ctx.get_client() as client:
+        c = CardResolver(client).resolve(card_common_id)
         updated = client.update_card(
             card_id=c.card_id,
             name=name,
             detailed_description=description,
             archived=archived,
-            custom_fields=custom_fields,
         )
-
-        messages = [f"Updated card: {updated.name}"]
-
-        # Update tasks if specified
-        if tasks:
-            for task_update in tasks:
-                task_id = task_update.get("task_id")
-                if not task_id:
-                    continue
-                client.update_task(
-                    task_id=task_id,
-                    name=task_update.get("name"),
-                    completed=task_update.get("completed"),
-                )
-            messages.append(f"Updated {len(tasks)} task(s)")
-
-        # Create new task list if specified
-        if add_tasklist:
-            tl_name = add_tasklist.get("name", "")
-            tl_tasks = add_tasklist.get("tasks")
-            new_tasklist = client.create_tasklist(
-                c.card_common_id, tl_name, tasks=tl_tasks
-            )
-            task_count = len(new_tasklist.tasks) if new_tasklist.tasks else 0
-            msg = f"Created task list: {new_tasklist.name}"
-            if task_count:
-                msg += f" ({task_count} tasks)"
-            messages.append(msg)
-
-        # Create new task if specified
-        if add_task:
-            tasklist_id = add_task.get("tasklist_id")
-            task_name = add_task.get("name")
-            if tasklist_id and task_name:
-                new_task = client.create_task(tasklist_id, task_name)
-                messages.append(f"Created task: {new_task.name}")
-
-        # Delete task list if specified
-        if delete_tasklist:
-            client.delete_tasklist(delete_tasklist)
-            messages.append(f"Deleted task list: {delete_tasklist}")
-
         return {
-            "message": "; ".join(messages),
+            "message": f"Updated card: {updated.name}",
             "card_id": updated.card_id,
             "sequential_id": updated.sequential_id,
             "name": updated.name,
         }
+
+
+@mcp.tool
+def set_custom_fields(
+    custom_fields: list[dict[str, Any]],
+    ctx: Context,
+) -> dict[str, Any]:
+    """Update custom field values on the selected card.
+
+    Requires a card to be selected with set_card first.
+
+    Args:
+        custom_fields: List of custom field updates. Each dict should contain
+            'customFieldId' and the appropriate value field for the field type:
+            - Text: {'customFieldId': '...', 'value': 'text'}
+            - Number/Rating: {'customFieldId': '...', 'total': 5}
+            - Link: {'customFieldId': '...', 'link': {'url': '...', 'text': '...'}}
+            - Checkbox: {'customFieldId': '...', 'value': True}
+            - Date: {'customFieldId': '...', 'value': '2024-01-15'}
+            - Status: {'customFieldId': '...', 'value': ['itemId1', 'itemId2']}
+
+    Returns:
+        The updated card details
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    card_common_id = favro_ctx.require_card()
+    with favro_ctx.get_client() as client:
+        c = CardResolver(client).resolve(card_common_id)
+        updated = client.update_card(card_id=c.card_id, custom_fields=custom_fields)
+        return {
+            "message": f"Updated custom fields on card: {updated.name}",
+            "card_id": updated.card_id,
+            "sequential_id": updated.sequential_id,
+            "name": updated.name,
+        }
+
+
+@mcp.tool
+def update_tasks(
+    tasks: list[dict[str, Any]],
+    ctx: Context,
+) -> dict[str, Any]:
+    """Update existing tasks on the selected card.
+
+    Requires a card to be selected with set_card first.
+
+    Args:
+        tasks: List of task updates. Each dict should contain 'task_id' and optionally
+            'completed' (bool) or 'name' (str) to update
+
+    Returns:
+        Confirmation of the updates
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    favro_ctx.require_card()
+    with favro_ctx.get_client() as client:
+        for task_update in tasks:
+            task_id = task_update.get("task_id")
+            if not task_id:
+                continue
+            client.update_task(
+                task_id=task_id,
+                name=task_update.get("name"),
+                completed=task_update.get("completed"),
+            )
+        return {"message": f"Updated {len(tasks)} task(s)"}
+
+
+@mcp.tool
+def create_tasklist(
+    name: str,
+    ctx: Context,
+    tasks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Create a new task list on the selected card.
+
+    Requires a card to be selected with set_card first.
+
+    Args:
+        name: Name of the new task list
+        tasks: Optional list of tasks to add inline:
+            [{'name': 'Task 1'}, {'name': 'Task 2', 'completed': true}]
+
+    Returns:
+        The created task list details
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    card_common_id = favro_ctx.require_card()
+    with favro_ctx.get_client() as client:
+        new_tasklist = client.create_tasklist(card_common_id, name, tasks=tasks)
+        task_count = len(new_tasklist.tasks) if new_tasklist.tasks else 0
+        msg = f"Created task list: {new_tasklist.name}"
+        if task_count:
+            msg += f" ({task_count} tasks)"
+        return {
+            "message": msg,
+            "tasklist_id": new_tasklist.tasklist_id,
+            "name": new_tasklist.name,
+            "task_count": task_count,
+        }
+
+
+@mcp.tool
+def create_task(
+    tasklist_id: str,
+    name: str,
+    ctx: Context,
+) -> dict[str, Any]:
+    """Create a new task in a task list on the selected card.
+
+    Requires a card to be selected with set_card first.
+
+    Args:
+        tasklist_id: The task list ID to add the task to
+        name: Name of the new task
+
+    Returns:
+        The created task details
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    favro_ctx.require_card()
+    with favro_ctx.get_client() as client:
+        new_task = client.create_task(tasklist_id, name)
+        return {
+            "message": f"Created task: {new_task.name}",
+            "task_id": new_task.task_id,
+            "name": new_task.name,
+        }
+
+
+@mcp.tool
+def delete_tasklist(
+    tasklist_id: str,
+    ctx: Context,
+) -> dict[str, Any]:
+    """Delete a task list from the selected card.
+
+    Requires a card to be selected with set_card first.
+
+    Args:
+        tasklist_id: The task list ID to delete
+
+    Returns:
+        Confirmation of deletion
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    favro_ctx.require_card()
+    with favro_ctx.get_client() as client:
+        client.delete_tasklist(tasklist_id)
+        return {"message": f"Deleted task list: {tasklist_id}"}
 
 
 @mcp.tool
