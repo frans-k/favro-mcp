@@ -376,6 +376,7 @@ def set_card(card: str, ctx: Context, board: str | None = None) -> dict[str, Any
 
         c = CardResolver(client).resolve(card, board_id=board_id)
         favro_ctx.current_card_id = c.card_common_id
+        favro_ctx.current_card_widget_card_id = c.card_id
 
         return {
             "message": f"Selected card #{c.sequential_id}: {c.name}",
@@ -398,7 +399,7 @@ def get_current_card(ctx: Context) -> dict[str, Any]:
 
     favro_ctx.require_org()
     with favro_ctx.get_client() as client:
-        c = CardResolver(client).resolve(favro_ctx.current_card_id)
+        c = client.get_card(favro_ctx.require_card_widget_id())
 
         tasklists_data: list[dict[str, Any]] = []
         tasklists = client.get_tasklists(c.card_common_id)
@@ -450,11 +451,10 @@ def update_card(
     """
     favro_ctx = get_favro_context(ctx)
     favro_ctx.require_org()
-    card_common_id = favro_ctx.require_card()
+    card_id = favro_ctx.require_card_widget_id()
     with favro_ctx.get_client() as client:
-        c = CardResolver(client).resolve(card_common_id)
         updated = client.update_card(
-            card_id=c.card_id,
+            card_id=card_id,
             name=name,
             detailed_description=description,
             archived=archived,
@@ -491,10 +491,9 @@ def set_custom_fields(
     """
     favro_ctx = get_favro_context(ctx)
     favro_ctx.require_org()
-    card_common_id = favro_ctx.require_card()
+    card_id = favro_ctx.require_card_widget_id()
     with favro_ctx.get_client() as client:
-        c = CardResolver(client).resolve(card_common_id)
-        updated = client.update_card(card_id=c.card_id, custom_fields=custom_fields)
+        updated = client.update_card(card_id=card_id, custom_fields=custom_fields)
         return {
             "message": f"Updated custom fields on card: {updated.name}",
             "card_id": updated.card_id,
