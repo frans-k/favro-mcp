@@ -18,6 +18,7 @@ class FavroContext:
     current_org_id: str | None = None
     current_board_id: str | None = None
     current_card_id: str | None = None  # card_common_id of the selected card
+    current_card_widget_card_id: str | None = None  # per-board card_id; required for /cards/{id} writes
 
     def get_client(self) -> FavroClient:
         """Create a configured Favro API client.
@@ -87,6 +88,25 @@ class FavroContext:
                 "No card selected. Use the set_card tool to select a card first."
             )
         return self.current_card_id
+
+    def require_card_widget_id(self) -> str:
+        """Require that a card is selected and return its per-board card_id.
+
+        The per-board card_id (not card_common_id) is what Favro's
+        /cards/{id} write endpoints accept. Set by set_card alongside
+        current_card_id.
+
+        Returns:
+            The current card's per-board card_id
+
+        Raises:
+            ValueError: If no card is selected
+        """
+        if not self.current_card_widget_card_id:
+            raise ValueError(
+                "No card selected. Use the set_card tool to select a card first."
+            )
+        return self.current_card_widget_card_id
 
     def get_effective_board_id(self, board: str | None) -> str | None:
         """Get effective board ID from parameter or current selection.

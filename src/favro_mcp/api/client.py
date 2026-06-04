@@ -421,12 +421,23 @@ class FavroClient:
         data = self._get(f"/cards/{card_id}", params={"descriptionFormat": "markdown"})
         return Card.model_validate(data)
 
+    def get_lanes(self, widget_common_id: str) -> list[Card]:
+        """Get all swimlanes on a board.
+
+        Favro models swimlanes as cards flagged with ``isLane``; a regular
+        card's ``laneId`` references the ``cardId`` of its lane. There is no
+        dedicated lanes endpoint, so lanes are filtered from the board's cards.
+        """
+        cards = self.get_cards(widget_common_id=widget_common_id)
+        return [c for c in cards if c.is_lane and not c.archived]
+
     def create_card(
         self,
         name: str,
         widget_common_id: str | None = None,
         column_id: str | None = None,
         lane_id: str | None = None,
+        parent_card_id: str | None = None,
         detailed_description: str | None = None,
         tags: list[str] | None = None,
         start_date: str | None = None,
@@ -441,6 +452,8 @@ class FavroClient:
             data["columnId"] = column_id
         if lane_id:
             data["laneId"] = lane_id
+        if parent_card_id:
+            data["parentCardId"] = parent_card_id
         if detailed_description:
             data["detailedDescription"] = detailed_description
         if tags:
