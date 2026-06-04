@@ -10,6 +10,7 @@ from favro_mcp.resolvers import (
     BoardResolver,
     CardResolver,
     ColumnResolver,
+    LaneResolver,
     TagResolver,
     UserResolver,
 )
@@ -145,6 +146,30 @@ def list_cards(
             "page": page,
             "total_pages": total_pages,
             "cards_on_page": len(result),
+        }
+
+
+@mcp.tool
+def list_lanes(board: str, ctx: Context) -> dict[str, Any]:
+    """List the swimlanes on a board.
+
+    On boards that use swimlanes, the lane is the work type
+    (e.g. Platform / Support / Ops). Use a returned ``lane_id`` or name with
+    ``create_card(lane=...)`` or ``move_card(lane=...)``.
+
+    Args:
+        board: The board's widget_common_id, name, or ID
+
+    Returns:
+        A list of lanes with their IDs and names.
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    with favro_ctx.get_client() as client:
+        board_id = BoardResolver(client).resolve(board).widget_common_id
+        lanes = client.get_lanes(board_id)
+        return {
+            "lanes": [{"lane_id": lane.card_id, "name": lane.name} for lane in lanes]
         }
 
 
@@ -292,6 +317,8 @@ def create_card(
     ctx: Context,
     board: str | None = None,
     column: str | None = None,
+    lane: str | None = None,
+    parent: str | None = None,
     description: str | None = None,
     tags: list[str] | None = None,
     assignees: list[str] | None = None,
@@ -302,6 +329,9 @@ def create_card(
         name: Card name/title
         board: Board ID or name (uses current board if not specified)
         column: Column ID or name to place the card in
+        lane: Swimlane ID or name to place the card in. On boards that use
+            swimlanes, the lane is the work type (e.g. Platform / Support / Ops).
+        parent: Parent card ID, sequential ID (e.g. #263556), or name to nest this card under
         description: Detailed description (supports markdown)
         tags: List of tag IDs or names to add
         assignees: List of user IDs, names, or emails to assign
@@ -323,6 +353,31 @@ def create_card(
         if column:
             column_id = ColumnResolver(client).resolve(column, board_id=board_id).column_id
 
+        # Resolve lane (swimlane / work type) if provided. The laneId expected
+        # by the API is the lane card's card_id.
+        lane_id = None
+        if lane:
+            lane_id = LaneResolver(client).resolve(lane, board_id=board_id).card_id
+
+        # Resolve parent card if provided.
+        # parentCardId requires the board-specific card_id, which differs
+        # from the card_id returned by get_card. We resolve to
+        # card_common_id first, then find the board-specific card_id
+        # by listing cards on the target board.
+        parent_card_id = None
+        if parent:
+            parent_common_id = CardResolver(client).resolve(parent, board_id=board_id).card_common_id
+            board_cards = client.get_cards(widget_common_id=board_id)
+            board_card = next(
+                (c for c in board_cards if c.card_common_id == parent_common_id),
+                None,
+            )
+            if board_card is None:
+                raise ValueError(
+                    f"Parent card '{parent}' not found on the target board."
+                )
+            parent_card_id = board_card.card_id
+
         # Resolve tags if provided
         tag_ids = None
         if tags:
@@ -339,6 +394,8 @@ def create_card(
             name=name,
             widget_common_id=board_id,
             column_id=column_id,
+            lane_id=lane_id,
+            parent_card_id=parent_card_id,
             detailed_description=description,
             tags=tag_ids,
             assignments=user_ids,
@@ -624,20 +681,29 @@ def delete_tasklist(
 @mcp.tool
 def move_card(
     card: str,
-    column: str,
     ctx: Context,
+    column: str | None = None,
+    lane: str | None = None,
     board: str | None = None,
 ) -> dict[str, Any]:
-    """Move a card to a different column.
+    """Move a card to a different column and/or swimlane.
+
+    Provide at least one of ``column`` or ``lane``. On boards that use
+    swimlanes, the lane is the work type (e.g. Platform / Support / Ops),
+    while the column is the flow stage.
 
     Args:
         card: Card ID, sequential ID (#123), or name
-        column: Target column ID or name
+        column: Target column ID or name (flow stage)
+        lane: Target swimlane ID or name (work type)
         board: Board ID or name (needed for name lookups)
 
     Returns:
         The updated card details
     """
+    if not column and not lane:
+        raise ValueError("Provide at least one of 'column' or 'lane'.")
+
     favro_ctx = get_favro_context(ctx)
     favro_ctx.require_org()
     with favro_ctx.get_client() as client:
@@ -650,20 +716,38 @@ def move_card(
         # Use the card's board if not specified
         target_board = board_id or c.widget_common_id
         if not target_board:
-            raise ValueError("Board ID required to resolve column")
+            raise ValueError("Board ID required to resolve column/lane")
 
-        col = ColumnResolver(client).resolve(column, board_id=target_board)
+        col = None
+        if column:
+            col = ColumnResolver(client).resolve(column, board_id=target_board)
+
+        lane_obj = None
+        if lane:
+            lane_obj = LaneResolver(client).resolve(lane, board_id=target_board)
+
         updated = client.update_card(
             card_id=c.card_id,
-            column_id=col.column_id,
+            column_id=col.column_id if col else None,
+            lane_id=lane_obj.card_id if lane_obj else None,
             widget_common_id=target_board,
         )
 
+        destination = " and ".join(
+            part
+            for part in (
+                f"column '{col.name}'" if col else "",
+                f"lane '{lane_obj.name}'" if lane_obj else "",
+            )
+            if part
+        )
         return {
-            "message": f"Moved card '{updated.name}' to column '{col.name}'",
+            "message": f"Moved card '{updated.name}' to {destination}",
             "card_id": updated.card_id,
-            "column_id": col.column_id,
-            "column_name": col.name,
+            "column_id": col.column_id if col else None,
+            "column_name": col.name if col else None,
+            "lane_id": lane_obj.card_id if lane_obj else None,
+            "lane_name": lane_obj.name if lane_obj else None,
         }
 
 
