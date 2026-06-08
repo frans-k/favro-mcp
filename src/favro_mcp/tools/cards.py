@@ -536,6 +536,7 @@ def update_card(
         # Resolve parent on the selected card's own board, since parentCardId
         # is board-specific and the parent must belong to the same widget.
         parent_card_id = None
+        parent_widget_id = None
         if parent:
             board_id = favro_ctx.current_card_widget_common_id
             if not board_id:
@@ -544,10 +545,15 @@ def update_card(
                     "Re-select the card with set_card first."
                 )
             parent_card_id = _resolve_board_card_id(client, parent, board_id)
+            # Favro requires the widget context alongside parentCardId so it can
+            # validate the parent belongs to the same board. Only sent when
+            # setting a parent, to avoid implicitly moving the card otherwise.
+            parent_widget_id = board_id
         updated = client.update_card(
             card_id=card_id,
             name=name,
             detailed_description=description,
+            widget_common_id=parent_widget_id,
             parent_card_id=parent_card_id,
             archived=archived,
         )
