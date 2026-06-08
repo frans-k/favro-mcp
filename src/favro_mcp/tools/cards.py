@@ -324,6 +324,25 @@ def add_comment(
         }
 
 
+def _resolve_parent_card_id(client: Any, parent: str, board_id: str) -> str:
+    """Resolve a parent reference to the board-specific card_id for parentCardId.
+
+    Favro's ``parentCardId`` must be the parent's per-board ``card_id`` on
+    ``board_id`` — which differs from its ``card_common_id`` and from its
+    ``card_id`` on other boards. We resolve to the common id first, then find
+    the matching board-specific card on the target board.
+    """
+    parent_common_id = CardResolver(client).resolve(parent, board_id=board_id).card_common_id
+    board_cards = client.get_cards(widget_common_id=board_id)
+    board_card = next(
+        (c for c in board_cards if c.card_common_id == parent_common_id),
+        None,
+    )
+    if board_card is None:
+        raise ValueError(f"Parent card '{parent}' not found on the target board.")
+    return board_card.card_id
+
+
 @mcp.tool
 def create_card(
     name: str,
@@ -373,23 +392,9 @@ def create_card(
             lane_id = LaneResolver(client).resolve(lane, board_id=board_id).card_id
 
         # Resolve parent card if provided.
-        # parentCardId requires the board-specific card_id, which differs
-        # from the card_id returned by get_card. We resolve to
-        # card_common_id first, then find the board-specific card_id
-        # by listing cards on the target board.
         parent_card_id = None
         if parent:
-            parent_common_id = CardResolver(client).resolve(parent, board_id=board_id).card_common_id
-            board_cards = client.get_cards(widget_common_id=board_id)
-            board_card = next(
-                (c for c in board_cards if c.card_common_id == parent_common_id),
-                None,
-            )
-            if board_card is None:
-                raise ValueError(
-                    f"Parent card '{parent}' not found on the target board."
-                )
-            parent_card_id = board_card.card_id
+            parent_card_id = _resolve_parent_card_id(client, parent, board_id)
 
         # Resolve tags if provided
         tag_ids = None
@@ -447,6 +452,7 @@ def set_card(card: str, ctx: Context, board: str | None = None) -> dict[str, Any
         c = CardResolver(client).resolve(card, board_id=board_id)
         favro_ctx.current_card_id = c.card_common_id
         favro_ctx.current_card_widget_card_id = c.card_id
+        favro_ctx.current_card_widget_common_id = c.widget_common_id or board_id
 
         return {
             "message": f"Selected card #{c.sequential_id}: {c.name}",
@@ -505,6 +511,7 @@ def update_card(
     ctx: Context,
     name: str | None = None,
     description: str | None = None,
+    parent: str | None = None,
     archived: bool | None = None,
 ) -> dict[str, Any]:
     """Update basic properties of the selected card.
@@ -514,6 +521,9 @@ def update_card(
     Args:
         name: New card name
         description: New detailed description (supports markdown)
+        parent: Parent card ID, sequential ID (e.g. #263556), or name to nest the
+            selected card under. The parent must live on the same board as the
+            selected card. Favro has no API to clear a parent via update.
         archived: Archive (True) or unarchive (False) the card
 
     Returns:
@@ -523,10 +533,22 @@ def update_card(
     favro_ctx.require_org()
     card_id = favro_ctx.require_card_widget_id()
     with favro_ctx.get_client() as client:
+        # Resolve parent on the selected card's own board, since parentCardId
+        # is board-specific and the parent must belong to the same widget.
+        parent_card_id = None
+        if parent:
+            board_id = favro_ctx.current_card_widget_common_id
+            if not board_id:
+                raise ValueError(
+                    "Cannot resolve parent: the selected card's board is unknown. "
+                    "Re-select the card with set_card first."
+                )
+            parent_card_id = _resolve_parent_card_id(client, parent, board_id)
         updated = client.update_card(
             card_id=card_id,
             name=name,
             detailed_description=description,
+            parent_card_id=parent_card_id,
             archived=archived,
         )
         return {
