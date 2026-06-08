@@ -73,6 +73,7 @@ def _card_to_dict(card: Card) -> dict[str, Any]:
         "widget_common_id": card.widget_common_id,
         "column_id": card.column_id,
         "lane_id": card.lane_id,
+        "parent_card_id": card.parent_card_id,
         "tags": card.tags,
         "assignments": [
             {"user_id": a.user_id, "completed": a.completed} for a in card.assignments
@@ -278,9 +279,26 @@ def get_card_details(card: str, ctx: Context, board: str | None = None) -> dict[
             for comment in comments
         ]
 
+        # Find child cards on the same board (cards whose parentCardId is this
+        # card's board-specific card_id). parent_card_id is already surfaced by
+        # _card_to_dict.
+        children_data: list[dict[str, Any]] = []
+        children_board = board_id or c.widget_common_id
+        if children_board:
+            for s in client.get_cards(widget_common_id=children_board):
+                if s.parent_card_id == c.card_id:
+                    children_data.append(
+                        {
+                            "card_id": s.card_id,
+                            "sequential_id": s.sequential_id,
+                            "name": s.name,
+                        }
+                    )
+
         result = _card_to_dict(c)
         result["tasklists"] = tasklists_data
         result["comments"] = comments_data
+        result["children"] = children_data
         # Clean description to remove auto-appended tasklist checkboxes
         result["detailed_description"] = _strip_tasklist_from_description(
             result["detailed_description"], tasklists_data
