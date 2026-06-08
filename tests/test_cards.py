@@ -9,6 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 from favro_mcp.api.client import FavroClient
+from favro_mcp.api.models import Card
+from favro_mcp.tools.cards import _card_to_dict
 
 
 def _client_capturing_put() -> tuple[FavroClient, dict[str, Any]]:
@@ -63,6 +65,33 @@ def test_add_card_dependencies_posts_dependencies_body() -> None:
     assert captured["data"] == {
         "dependencies": [{"cardId": "dep-card", "isBefore": True}]
     }
+
+
+def test_card_to_dict_surfaces_parent_card_id() -> None:
+    card = Card.model_validate(
+        {
+            "cardId": "card-1",
+            "organizationId": "org-1",
+            "cardCommonId": "common-1",
+            "name": "Child",
+            "sequentialId": 1,
+            "parentCardId": "parent-board-card-id",
+        }
+    )
+    assert _card_to_dict(card)["parent_card_id"] == "parent-board-card-id"
+
+
+def test_card_to_dict_parent_is_none_when_unset() -> None:
+    card = Card.model_validate(
+        {
+            "cardId": "card-1",
+            "organizationId": "org-1",
+            "cardCommonId": "common-1",
+            "name": "Orphan",
+            "sequentialId": 1,
+        }
+    )
+    assert _card_to_dict(card)["parent_card_id"] is None
 
 
 def test_delete_card_dependency_hits_scoped_path() -> None:
