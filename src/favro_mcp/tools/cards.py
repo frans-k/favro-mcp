@@ -324,22 +324,22 @@ def add_comment(
         }
 
 
-def _resolve_parent_card_id(client: Any, parent: str, board_id: str) -> str:
-    """Resolve a parent reference to the board-specific card_id for parentCardId.
+def _resolve_board_card_id(client: Any, card: str, board_id: str) -> str:
+    """Resolve a card reference to its board-specific card_id on ``board_id``.
 
-    Favro's ``parentCardId`` must be the parent's per-board ``card_id`` on
-    ``board_id`` — which differs from its ``card_common_id`` and from its
-    ``card_id`` on other boards. We resolve to the common id first, then find
-    the matching board-specific card on the target board.
+    Several Favro fields (``parentCardId``, dependency ``cardId``) need the
+    card's per-board ``card_id`` — which differs from its ``card_common_id`` and
+    from its ``card_id`` on other boards. We resolve to the common id first, then
+    find the matching board-specific card on the target board.
     """
-    parent_common_id = CardResolver(client).resolve(parent, board_id=board_id).card_common_id
+    common_id = CardResolver(client).resolve(card, board_id=board_id).card_common_id
     board_cards = client.get_cards(widget_common_id=board_id)
     board_card = next(
-        (c for c in board_cards if c.card_common_id == parent_common_id),
+        (c for c in board_cards if c.card_common_id == common_id),
         None,
     )
     if board_card is None:
-        raise ValueError(f"Parent card '{parent}' not found on the target board.")
+        raise ValueError(f"Card '{card}' not found on the target board.")
     return board_card.card_id
 
 
@@ -394,7 +394,7 @@ def create_card(
         # Resolve parent card if provided.
         parent_card_id = None
         if parent:
-            parent_card_id = _resolve_parent_card_id(client, parent, board_id)
+            parent_card_id = _resolve_board_card_id(client, parent, board_id)
 
         # Resolve tags if provided
         tag_ids = None
@@ -543,7 +543,7 @@ def update_card(
                     "Cannot resolve parent: the selected card's board is unknown. "
                     "Re-select the card with set_card first."
                 )
-            parent_card_id = _resolve_parent_card_id(client, parent, board_id)
+            parent_card_id = _resolve_board_card_id(client, parent, board_id)
         updated = client.update_card(
             card_id=card_id,
             name=name,
@@ -911,4 +911,106 @@ def delete_card(
         return {
             "message": f"Deleted card: {card_name}",
             "card_id": card_id,
+        }
+
+
+@mcp.tool
+def add_dependency(
+    card: str,
+    depends_on: str,
+    ctx: Context,
+    board: str | None = None,
+) -> dict[str, Any]:
+    """Add a dependency: ``card`` depends on ``depends_on``.
+
+    ``depends_on`` must come before ``card`` (Favro stores this on ``card`` as a
+    dependency entry for ``depends_on`` with isBefore=true). Appends — it does
+    not replace existing dependencies. Both cards must be on the same board.
+
+    Args:
+        card: The dependent card (ID, #seq, or name) — the one that comes after.
+        depends_on: The prerequisite card that must come before ``card``.
+        board: Board ID or name (uses current board if omitted).
+
+    Returns:
+        The card's dependencies after the addition.
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    with favro_ctx.get_client() as client:
+        board_id = board or favro_ctx.current_board_id
+        if board:
+            board_id = BoardResolver(client).resolve(board).widget_common_id
+        if not board_id:
+            raise ValueError("No board specified and no current board selected.")
+        card_id = _resolve_board_card_id(client, card, board_id)
+        dep_id = _resolve_board_card_id(client, depends_on, board_id)
+        result = client.add_card_dependencies(
+            card_id, [{"cardId": dep_id, "isBefore": True}]
+        )
+        return {
+            "message": f"Added dependency: '{card}' depends on '{depends_on}'.",
+            "card_id": card_id,
+            "dependency_card_id": dep_id,
+            "dependencies": result.get("dependencies", []),
+        }
+
+
+@mcp.tool
+def list_dependencies(
+    card: str,
+    ctx: Context,
+    board: str | None = None,
+) -> dict[str, Any]:
+    """List a card's before/after dependencies.
+
+    Args:
+        card: Card ID, sequential ID (#123), or name.
+        board: Board ID or name (uses current board if omitted).
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    with favro_ctx.get_client() as client:
+        board_id = board or favro_ctx.current_board_id
+        if board:
+            board_id = BoardResolver(client).resolve(board).widget_common_id
+        if not board_id:
+            raise ValueError("No board specified and no current board selected.")
+        card_id = _resolve_board_card_id(client, card, board_id)
+        result = client.get_card_dependencies(card_id)
+        return {
+            "card_id": card_id,
+            "dependencies": result.get("dependencies", []),
+        }
+
+
+@mcp.tool
+def remove_dependency(
+    card: str,
+    dependency: str,
+    ctx: Context,
+    board: str | None = None,
+) -> dict[str, Any]:
+    """Remove a dependency between ``card`` and ``dependency``.
+
+    Args:
+        card: The card whose dependency is being removed.
+        dependency: The dependency card to unlink (ID, #seq, or name).
+        board: Board ID or name (uses current board if omitted).
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    with favro_ctx.get_client() as client:
+        board_id = board or favro_ctx.current_board_id
+        if board:
+            board_id = BoardResolver(client).resolve(board).widget_common_id
+        if not board_id:
+            raise ValueError("No board specified and no current board selected.")
+        card_id = _resolve_board_card_id(client, card, board_id)
+        dep_id = _resolve_board_card_id(client, dependency, board_id)
+        client.delete_card_dependency(card_id, dep_id)
+        return {
+            "message": f"Removed dependency '{dependency}' from '{card}'.",
+            "card_id": card_id,
+            "dependency_card_id": dep_id,
         }

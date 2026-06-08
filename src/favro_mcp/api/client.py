@@ -539,6 +539,32 @@ class FavroClient:
         params = {"everywhere": "true"} if everywhere else None
         self._delete(f"/cards/{card_id}", params)
 
+    # Card dependency endpoints
+    #
+    # Favro models "before/after" dependencies between cards. The path
+    # ``card_id`` and each dependency's ``cardId`` are board-specific card_ids
+    # (not card_common_ids). On a dependency entry, ``isBefore`` true means the
+    # dependency card comes *before* this card — i.e. this card depends on it.
+
+    def get_card_dependencies(self, card_id: str) -> dict[str, Any]:
+        """Get a card's dependencies. Returns the card's dependency object."""
+        return self._get(f"/cards/{card_id}/dependencies")
+
+    def add_card_dependencies(
+        self, card_id: str, dependencies: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Add dependencies to a card (appends; does not replace existing).
+
+        Each entry is ``{"cardId": <board card_id>, "isBefore": <bool>}``.
+        """
+        return self._post(
+            f"/cards/{card_id}/dependencies", {"dependencies": dependencies}
+        )
+
+    def delete_card_dependency(self, card_id: str, dependency_card_id: str) -> None:
+        """Delete a single dependency from a card."""
+        self._delete(f"/cards/{card_id}/dependencies/{dependency_card_id}")
+
     # Tag endpoints
     def get_tags(self) -> list[Tag]:
         """Get all tags in the organization."""

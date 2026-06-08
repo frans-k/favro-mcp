@@ -43,3 +43,37 @@ def test_update_card_omits_parent_when_not_set() -> None:
     client.update_card(card_id="card-1", name="Renamed")
     assert "parentCardId" not in captured["data"]
     assert captured["data"]["name"] == "Renamed"
+
+
+def test_add_card_dependencies_posts_dependencies_body() -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_post(path: str, data: dict[str, Any]) -> dict[str, Any]:
+        captured["path"] = path
+        captured["data"] = data
+        return {"cardId": "card-1", "dependencies": data["dependencies"]}
+
+    client = FavroClient("e@example.com", "token")
+    client._post = fake_post  # type: ignore[method-assign]
+
+    client.add_card_dependencies(
+        "card-1", [{"cardId": "dep-card", "isBefore": True}]
+    )
+    assert captured["path"] == "/cards/card-1/dependencies"
+    assert captured["data"] == {
+        "dependencies": [{"cardId": "dep-card", "isBefore": True}]
+    }
+
+
+def test_delete_card_dependency_hits_scoped_path() -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_delete(path: str, params: Any = None) -> dict[str, Any]:
+        captured["path"] = path
+        return {}
+
+    client = FavroClient("e@example.com", "token")
+    client._delete = fake_delete  # type: ignore[method-assign]
+
+    client.delete_card_dependency("card-1", "dep-card")
+    assert captured["path"] == "/cards/card-1/dependencies/dep-card"
