@@ -19,6 +19,7 @@ class FavroContext:
     current_board_id: str | None = None
     current_card_id: str | None = None  # card_common_id of the selected card
     current_card_widget_card_id: str | None = None  # per-board card_id; required for /cards/{id} writes
+    current_card_widget_common_id: str | None = None  # board (widgetCommonId) the selected card lives on; needed to resolve a parent on the same board
 
     def get_client(self) -> FavroClient:
         """Create a configured Favro API client.

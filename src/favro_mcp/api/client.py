@@ -475,6 +475,7 @@ class FavroClient:
         widget_common_id: str | None = None,
         column_id: str | None = None,
         lane_id: str | None = None,
+        parent_card_id: str | None = None,
         add_tags: list[str] | None = None,
         remove_tags: list[str] | None = None,
         start_date: str | None = None,
@@ -510,6 +511,8 @@ class FavroClient:
             data["columnId"] = column_id
         if lane_id is not None:
             data["laneId"] = lane_id
+        if parent_card_id is not None:
+            data["parentCardId"] = parent_card_id
         if add_tags:
             data["addTagIds"] = add_tags
         if remove_tags:
