@@ -186,8 +186,10 @@ def list_custom_fields(
         field_type: Filter by type (e.g., "Link", "Text", "Rating", "Single select")
 
     Returns:
-        Custom field definitions with IDs, names, and types.
-        Use the customFieldId when updating card custom fields.
+        Custom field definitions with IDs, names, and types. Select-style fields
+        (Single select, Multiple select, Status, Tags) also include their `items`
+        — the selectable options as `{itemId, name}` — needed to set values via
+        set_custom_fields. Use the customFieldId when updating card custom fields.
     """
     favro_ctx = get_favro_context(ctx)
     favro_ctx.require_org()
@@ -202,11 +204,22 @@ def list_custom_fields(
             type_lower = field_type.lower()
             fields = [f for f in fields if f.get("type", "").lower() == type_lower]
 
-        # Return minimal info
-        result = [
-            {"customFieldId": f["customFieldId"], "name": f["name"], "type": f["type"]}
-            for f in fields
-        ]
+        result: list[dict[str, Any]] = []
+        for f in fields:
+            entry: dict[str, Any] = {
+                "customFieldId": f["customFieldId"],
+                "name": f["name"],
+                "type": f["type"],
+            }
+            # Select-style fields carry their options; expose them so callers can
+            # resolve an option label to the itemId that set_custom_fields needs.
+            items = f.get("customFieldItems")
+            if items:
+                entry["items"] = [
+                    {"itemId": it.get("customFieldItemId"), "name": it.get("name")}
+                    for it in items
+                ]
+            result.append(entry)
         return {"custom_fields": result, "count": len(result)}
 
 
