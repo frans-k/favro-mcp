@@ -45,3 +45,11 @@ src/favro_mcp/
   tasklist API instead
 - Tasklists must be created with a name to get a bold heading in the UI;
   renaming an unnamed list later does not add the heading retroactively
+- A card can live on several boards at once. The instances share one
+  `cardCommonId`; each has its own `cardId`, column and position. `PUT /cards`
+  with `dragMode: "commit"` (the API's default) adds an instance on the target
+  board, `"move"` relocates the card — see `add_card_to_board`. `get_cards` must
+  be called with `unique=False` to see the instances separately
+- `CardResolver` reads `prefix-123` as sequential id `#123`, so an identifier
+  like `card-1` resolves as `#1` rather than as a card id — worth knowing when
+  writing fixtures

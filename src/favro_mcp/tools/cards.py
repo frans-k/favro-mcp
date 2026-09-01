@@ -1,6 +1,6 @@
 """Card tools for Favro MCP."""
 
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import Context
 
@@ -807,6 +807,104 @@ def move_card(
             "column_name": col.name if col else None,
             "lane_id": lane_obj.card_id if lane_obj else None,
             "lane_name": lane_obj.name if lane_obj else None,
+        }
+
+
+@mcp.tool
+def add_card_to_board(
+    card: str,
+    to_board: str,
+    ctx: Context,
+    column: str | None = None,
+    lane: str | None = None,
+    mode: Literal["copy", "move"] = "copy",
+    board: str | None = None,
+) -> dict[str, Any]:
+    """Put an existing card on another board, as a copy or as a move.
+
+    A Favro card can live on several boards at once: the instances share one
+    ``cardCommonId`` but each has its own ``cardId``, column and position.
+
+    ``mode="copy"`` (the default) gives the card an instance on ``to_board`` and
+    leaves the original where it is. Both instances are the same card, so a
+    comment, a description edit or a tasklist change shows on both, while the
+    column and position are per-board. Use it when a planning board should keep
+    tracking work that a delivery board is now running.
+
+    ``mode="move"`` relocates the card instead — it stops appearing on the board
+    it came from.
+
+    Args:
+        card: Card ID, sequential ID (#123), or name
+        to_board: Destination board ID or name
+        column: Column on the destination board; Favro chooses one if omitted
+        lane: Swimlane on the destination board, for boards that use them
+        mode: "copy" to keep the card where it is, "move" to relocate it
+        board: The board the card is on now (needed for name lookups)
+
+    Returns:
+        The destination instance, including the card_id it was given there.
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    with favro_ctx.get_client() as client:
+        source_board_id = board or favro_ctx.current_board_id
+        if board:
+            source_board_id = BoardResolver(client).resolve(board).widget_common_id
+
+        c = CardResolver(client).resolve(card, board_id=source_board_id)
+        dest = BoardResolver(client).resolve(to_board)
+
+        # Every instance of this card, so an existing one on the destination is
+        # not turned into a confusing second copy. ``unique`` has to be off:
+        # on by default it collapses the instances down to one.
+        instances = client.get_cards(card_sequential_id=c.sequential_id, unique=False)
+        present = next(
+            (i for i in instances if i.widget_common_id == dest.widget_common_id),
+            None,
+        )
+        if present is not None:
+            return {
+                "message": (
+                    f"Card '{c.name}' is already on board '{dest.name}' — left as it is"
+                ),
+                "card_id": present.card_id,
+                "card_common_id": c.card_common_id,
+                "board_id": dest.widget_common_id,
+                "board_name": dest.name,
+                "already_present": True,
+            }
+
+        col = None
+        if column:
+            col = ColumnResolver(client).resolve(column, board_id=dest.widget_common_id)
+
+        lane_obj = None
+        if lane:
+            lane_obj = LaneResolver(client).resolve(lane, board_id=dest.widget_common_id)
+
+        updated = client.update_card(
+            card_id=c.card_id,
+            widget_common_id=dest.widget_common_id,
+            column_id=col.column_id if col else None,
+            lane_id=lane_obj.card_id if lane_obj else None,
+            drag_mode="commit" if mode == "copy" else "move",
+        )
+
+        verb = "Copied" if mode == "copy" else "Moved"
+        landed = f" into column '{col.name}'" if col else ""
+        return {
+            "message": f"{verb} card '{updated.name}' to board '{dest.name}'{landed}",
+            "card_id": updated.card_id,
+            "card_common_id": updated.card_common_id,
+            "board_id": dest.widget_common_id,
+            "board_name": dest.name,
+            "column_id": col.column_id if col else None,
+            "column_name": col.name if col else None,
+            "lane_id": lane_obj.card_id if lane_obj else None,
+            "lane_name": lane_obj.name if lane_obj else None,
+            "kept_on_source_board": mode == "copy",
+            "already_present": False,
         }
 
 

@@ -187,6 +187,7 @@ See [Codex MCP documentation](https://developers.openai.com/codex/mcp/) for more
 | `create_card`        | Create a card        |
 | `update_card`        | Update a card        |
 | `move_card`          | Move card to column  |
+| `add_card_to_board`  | Copy or move a card to another board |
 | `assign_card`        | Assign/unassign user |
 | `tag_card`           | Add/remove tag       |
 | `delete_card`        | Delete a card        |
