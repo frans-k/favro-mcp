@@ -13,7 +13,7 @@ import pytest
 from fastmcp import Context
 
 from favro_mcp.api.client import FavroClient
-from favro_mcp.api.models import Card, Widget
+from favro_mcp.api.models import Card, Column, Widget
 from favro_mcp.tools import cards as card_tools
 from favro_mcp.tools.cards import _card_to_dict
 
@@ -152,9 +152,15 @@ def _widget(widget_common_id: str, name: str) -> Widget:
 class _FakeClient:
     """Just enough of FavroClient for the resolvers ``add_card_to_board`` uses."""
 
-    def __init__(self, instances: list[Card], widgets: list[Widget]) -> None:
+    def __init__(
+        self,
+        instances: list[Card],
+        widgets: list[Widget],
+        columns: list[Column] | None = None,
+    ) -> None:
         self._instances = instances
         self._widgets = widgets
+        self._columns = columns or []
         self.update_calls: list[dict[str, Any]] = []
         self.get_cards_calls: list[dict[str, Any]] = []
 
@@ -175,6 +181,15 @@ class _FakeClient:
             if w.widget_common_id == widget_id:
                 return w
         raise ValueError(f"no such widget: {widget_id}")
+
+    def get_column(self, column_id: str) -> Column:
+        for col in self._columns:
+            if col.column_id == column_id:
+                return col
+        raise ValueError(f"no such column: {column_id}")
+
+    def get_columns(self, board_id: str) -> list[Column]:
+        return [col for col in self._columns if col.widget_common_id == board_id]
 
     def get_cards(self, **kwargs: Any) -> list[Card]:
         """Filters the way the real endpoint does, ``unique`` included.
@@ -221,15 +236,20 @@ class _StubContext:
         return self._client
 
 
-FakeFavro = Callable[[list[Card], list[Widget]], _FakeClient]
+FakeFavro = Callable[..., _FakeClient]
+"""``_build(instances, widgets, columns=None)`` — see the fixture below."""
 
 
 @pytest.fixture
 def fake_favro(monkeypatch: pytest.MonkeyPatch) -> FakeFavro:
     """Point the card tools at a fake client, and hand it to the test."""
 
-    def _build(instances: list[Card], widgets: list[Widget]) -> _FakeClient:
-        client = _FakeClient(instances, widgets)
+    def _build(
+        instances: list[Card],
+        widgets: list[Widget],
+        columns: list[Column] | None = None,
+    ) -> _FakeClient:
+        client = _FakeClient(instances, widgets, columns)
         stub = _StubContext(client)
 
         def _stub_context(_ctx: object) -> _StubContext:
@@ -368,3 +388,71 @@ def test_add_card_to_board_move_is_skipped_when_the_source_is_the_destination(
 
     assert client.update_calls == []
     assert result["already_present"] is True
+
+
+def _column(column_id: str, widget_common_id: str, name: str) -> Column:
+    return Column.model_validate(
+        {
+            "columnId": column_id,
+            "organizationId": "org-1",
+            "widgetCommonId": widget_common_id,
+            "name": name,
+            "position": 0.0,
+        }
+    )
+
+
+def _kanban_columns() -> list[Column]:
+    return [_column("col-doing", "b0a2", "In progress")]
+
+
+def test_add_card_to_board_applies_a_column_to_a_card_already_there(
+    fake_favro: FakeFavro,
+) -> None:
+    """The no-op branch must not swallow a requested placement."""
+    client = fake_favro(_two_board_card(), _two_boards(), _kanban_columns())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), column="In progress"
+    )
+
+    # Written against the instance on the destination, not the source one.
+    assert client.update_calls[0]["card_id"] == "c0ffee02"
+    assert client.update_calls[0]["column_id"] == "col-doing"
+    # Placement on a single board carries no dragMode — the shape move_card uses.
+    assert "drag_mode" not in client.update_calls[0]
+    assert result["already_present"] is True
+    assert result["placement_updated"] is True
+    assert result["column_name"] == "In progress"
+
+
+def test_add_card_to_board_move_applies_a_column_when_source_is_the_destination(
+    fake_favro: FakeFavro,
+) -> None:
+    client = fake_favro(_two_board_card(), _two_boards(), _kanban_columns())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee02",
+        to_board="b0a2",
+        ctx=_no_ctx(),
+        mode="move",
+        column="In progress",
+    )
+
+    assert client.update_calls[0]["card_id"] == "c0ffee02"
+    assert client.update_calls[0]["column_id"] == "col-doing"
+    assert result["placement_updated"] is True
+
+
+def test_add_card_to_board_reports_no_placement_when_none_was_asked_for(
+    fake_favro: FakeFavro,
+) -> None:
+    client = fake_favro(_two_board_card(), _two_boards(), _kanban_columns())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx()
+    )
+
+    assert client.update_calls == []
+    assert result["already_present"] is True
+    assert result["placement_updated"] is False

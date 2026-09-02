@@ -838,7 +838,9 @@ def add_card_to_board(
     whichever instance the API happens to return, which is not good enough here.
 
     A copy is skipped when the card already has an instance on ``to_board``,
-    rather than committing a second one.
+    rather than committing a second one. A ``column`` or ``lane`` asked for at
+    the same time is still applied to that instance, so the argument is never
+    quietly dropped; ``placement_updated`` in the result says whether it was.
 
     Args:
         card: Card ID, sequential ID (#123), or name
@@ -883,25 +885,8 @@ def add_card_to_board(
                 "a board with set_board, or pass the board-specific card id."
             )
 
-        present = next(
-            (i for i in instances if i.widget_common_id == dest.widget_common_id),
-            None,
-        )
-        # Skip a copy that would be a second instance, and skip a move whose
-        # source instance is already the one on the destination. A move from a
-        # different board still runs, even if an instance is over there already.
-        if present is not None and (mode == "copy" or present.card_id == c.card_id):
-            return {
-                "message": (
-                    f"Card '{c.name}' is already on board '{dest.name}' — left as it is"
-                ),
-                "card_id": present.card_id,
-                "card_common_id": c.card_common_id,
-                "board_id": dest.widget_common_id,
-                "board_name": dest.name,
-                "already_present": True,
-            }
-
+        # Resolved before the short-circuit below, because that branch has to
+        # apply them too rather than drop them.
         col = None
         if column:
             col = ColumnResolver(client).resolve(column, board_id=dest.widget_common_id)
@@ -909,6 +894,68 @@ def add_card_to_board(
         lane_obj = None
         if lane:
             lane_obj = LaneResolver(client).resolve(lane, board_id=dest.widget_common_id)
+
+        present = next(
+            (i for i in instances if i.widget_common_id == dest.widget_common_id),
+            None,
+        )
+        # An instance is on the destination already: a copy must not add a second
+        # one, and a move whose source *is* that instance has nowhere to go. The
+        # cross-board step is settled either way — but a column or lane the caller
+        # asked for still has to land, on that instance, or the argument goes
+        # nowhere and the caller is told everything is fine. Placement on one board
+        # with no dragMode is the request move_card already makes.
+        if present is not None and (mode == "copy" or present.card_id == c.card_id):
+            if col is None and lane_obj is None:
+                return {
+                    "message": (
+                        f"Card '{c.name}' is already on board '{dest.name}' — "
+                        "left as it is"
+                    ),
+                    "card_id": present.card_id,
+                    "card_common_id": c.card_common_id,
+                    "board_id": dest.widget_common_id,
+                    "board_name": dest.name,
+                    "column_id": None,
+                    "column_name": None,
+                    "lane_id": None,
+                    "lane_name": None,
+                    "kept_on_source_board": mode == "copy",
+                    "already_present": True,
+                    "placement_updated": False,
+                }
+
+            repositioned = client.update_card(
+                card_id=present.card_id,
+                widget_common_id=dest.widget_common_id,
+                column_id=col.column_id if col else None,
+                lane_id=lane_obj.card_id if lane_obj else None,
+            )
+            landed = " and ".join(
+                part
+                for part in (
+                    f"column '{col.name}'" if col else "",
+                    f"lane '{lane_obj.name}'" if lane_obj else "",
+                )
+                if part
+            )
+            return {
+                "message": (
+                    f"Card '{repositioned.name}' was already on board "
+                    f"'{dest.name}' — moved it to {landed}"
+                ),
+                "card_id": present.card_id,
+                "card_common_id": c.card_common_id,
+                "board_id": dest.widget_common_id,
+                "board_name": dest.name,
+                "column_id": col.column_id if col else None,
+                "column_name": col.name if col else None,
+                "lane_id": lane_obj.card_id if lane_obj else None,
+                "lane_name": lane_obj.name if lane_obj else None,
+                "kept_on_source_board": mode == "copy",
+                "already_present": True,
+                "placement_updated": True,
+            }
 
         updated = client.update_card(
             card_id=c.card_id,
@@ -932,6 +979,7 @@ def add_card_to_board(
             "lane_name": lane_obj.name if lane_obj else None,
             "kept_on_source_board": mode == "copy",
             "already_present": False,
+            "placement_updated": col is not None or lane_obj is not None,
         }
 
 
