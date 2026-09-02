@@ -37,13 +37,18 @@ class CardResolver(BaseResolver[Card]):
     def _get_name(self, entity: Card) -> str:
         return entity.name
 
-    def _parse_sequential_id(self, identifier: str) -> int | None:
+    @staticmethod
+    def parse_sequential_id(identifier: str) -> int | None:
         """Parse sequential ID from various formats.
 
         Supported formats:
         - #123 (hash prefix)
         - 123 (plain number)
         - prefix-123 (org-specific prefix like thi-1825, Ref-17511)
+
+        Public because ``resolve`` tries this before a card ID lookup, so a
+        caller that needs to know *how* an identifier resolved has to be able
+        to ask the same question.
         """
         # Match #123, prefix-123 (any alphabetic prefix), or just 123
         match = re.match(r"^(?:#|[a-zA-Z]+-)?(\d+)$", identifier.strip())
@@ -74,7 +79,7 @@ class CardResolver(BaseResolver[Card]):
             ValueError: Missing board_id for name lookup
         """
         # Check if it's a sequential ID
-        seq_id = self._parse_sequential_id(identifier)
+        seq_id = self.parse_sequential_id(identifier)
         if seq_id is not None:
             # Use cardSequentialId API parameter - more efficient than fetching all
             cards = self.client.get_cards(

@@ -112,6 +112,7 @@ def test_delete_card_dependency_hits_scoped_path() -> None:
     client.delete_card_dependency("card-1", "dep-card")
     assert captured["path"] == "/cards/card-1/dependencies/dep-card"
 
+
 def test_update_card_sends_drag_mode() -> None:
     client, captured = _client_capturing_put()
     client.update_card(card_id="c0ffee01", widget_common_id="b0a2", drag_mode="commit")
@@ -149,6 +150,24 @@ def _widget(widget_common_id: str, name: str) -> Widget:
     )
 
 
+def _lane(card_id: str, widget_common_id: str, name: str) -> Card:
+    """A swimlane — Favro models them as cards flagged ``isLane``."""
+    lane = _card(card_id, widget_common_id, sequential_id=0)
+    return lane.model_copy(update={"is_lane": True, "name": name})
+
+
+def _column(column_id: str, widget_common_id: str, name: str) -> Column:
+    return Column.model_validate(
+        {
+            "columnId": column_id,
+            "organizationId": "org-1",
+            "widgetCommonId": widget_common_id,
+            "name": name,
+            "position": 0.0,
+        }
+    )
+
+
 class _FakeClient:
     """Just enough of FavroClient for the resolvers ``add_card_to_board`` uses."""
 
@@ -162,7 +181,6 @@ class _FakeClient:
         self._widgets = widgets
         self._columns = columns or []
         self.update_calls: list[dict[str, Any]] = []
-        self.get_cards_calls: list[dict[str, Any]] = []
 
     def __enter__(self) -> _FakeClient:
         return self
@@ -191,15 +209,18 @@ class _FakeClient:
     def get_columns(self, board_id: str) -> list[Column]:
         return [col for col in self._columns if col.widget_common_id == board_id]
 
+    def get_lanes(self, board_id: str) -> list[Card]:
+        return [
+            c for c in self._instances if c.is_lane and c.widget_common_id == board_id
+        ]
+
     def get_cards(self, **kwargs: Any) -> list[Card]:
         """Filters the way the real endpoint does, ``unique`` included.
 
-        ``unique`` defaults to True on the client, and that default is what
-        makes a multi-board card collapse to one arbitrary instance — the
-        behaviour the source-ambiguity guard exists for. A fake that ignored it
-        could not reproduce that.
+        ``unique`` defaults to True on the client, and that default is why a
+        sequential id resolves a multi-board card to one arbitrary instance —
+        the reason a move insists on knowing its source board.
         """
-        self.get_cards_calls.append(kwargs)
         seq: int | None = kwargs.get("card_sequential_id")
         widget: str | None = kwargs.get("widget_common_id")
         unique: bool = kwargs.get("unique", True)
@@ -237,7 +258,7 @@ class _StubContext:
 
 
 FakeFavro = Callable[..., _FakeClient]
-"""``_build(instances, widgets, columns=None)`` — see the fixture below."""
+"""``_build(instances, widgets, columns=None, selected_board=None)``."""
 
 
 @pytest.fixture
@@ -248,9 +269,11 @@ def fake_favro(monkeypatch: pytest.MonkeyPatch) -> FakeFavro:
         instances: list[Card],
         widgets: list[Widget],
         columns: list[Column] | None = None,
+        selected_board: str | None = None,
     ) -> _FakeClient:
         client = _FakeClient(instances, widgets, columns)
         stub = _StubContext(client)
+        stub.current_board_id = selected_board
 
         def _stub_context(_ctx: object) -> _StubContext:
             return stub
@@ -266,55 +289,6 @@ def _no_ctx() -> Context:
     return cast(Context, None)
 
 
-def test_add_card_to_board_copy_sends_commit(fake_favro: FakeFavro) -> None:
-    client = fake_favro(
-        [_card("c0ffee01", "b0a1")],
-        [_widget("b0a1", "Planning"), _widget("b0a2", "Kanban")],
-    )
-
-    result = card_tools.add_card_to_board(
-        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="copy"
-    )
-
-    assert client.update_calls[0]["drag_mode"] == "commit"
-    assert client.update_calls[0]["widget_common_id"] == "b0a2"
-    assert result["kept_on_source_board"] is True
-    assert result["already_present"] is False
-    # The instance check has to see every instance, not one per cardCommonId.
-    assert client.get_cards_calls[0]["unique"] is False
-
-
-def test_add_card_to_board_move_sends_move(fake_favro: FakeFavro) -> None:
-    client = fake_favro(
-        [_card("c0ffee01", "b0a1")],
-        [_widget("b0a1", "Planning"), _widget("b0a2", "Kanban")],
-    )
-
-    result = card_tools.add_card_to_board(
-        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="move"
-    )
-
-    assert client.update_calls[0]["drag_mode"] == "move"
-    assert result["kept_on_source_board"] is False
-
-
-def test_add_card_to_board_leaves_a_card_that_is_already_there(
-    fake_favro: FakeFavro,
-) -> None:
-    client = fake_favro(
-        [_card("c0ffee01", "b0a1"), _card("c0ffee02", "b0a2")],
-        [_widget("b0a1", "Planning"), _widget("b0a2", "Kanban")],
-    )
-
-    result = card_tools.add_card_to_board(
-        card="c0ffee01", to_board="b0a2", ctx=_no_ctx()
-    )
-
-    assert client.update_calls == []
-    assert result["already_present"] is True
-    assert result["card_id"] == "c0ffee02"
-
-
 def _two_board_card() -> list[Card]:
     """One card with an instance on each of two boards."""
     return [_card("c0ffee01", "b0a1"), _card("c0ffee02", "b0a2")]
@@ -324,12 +298,37 @@ def _two_boards() -> list[Widget]:
     return [_widget("b0a1", "Planning"), _widget("b0a2", "Kanban")]
 
 
-def test_add_card_to_board_move_refuses_an_ambiguous_source(
+def test_add_card_to_board_copy_sends_commit(fake_favro: FakeFavro) -> None:
+    client = fake_favro([_card("c0ffee01", "b0a1")], _two_boards())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="copy"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "commit"
+    assert client.update_calls[0]["widget_common_id"] == "b0a2"
+    assert result["board_id"] == "b0a2"
+    assert result["source_board_id"] == "b0a1"
+
+
+def test_add_card_to_board_move_sends_move(fake_favro: FakeFavro) -> None:
+    client = fake_favro([_card("c0ffee01", "b0a1")], _two_boards())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="move"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "move"
+    # The board that loses the card, which the caller may not have named.
+    assert result["source_board_id"] == "b0a1"
+
+
+def test_add_card_to_board_move_needs_a_source_board_for_a_sequential_id(
     fake_favro: FakeFavro,
 ) -> None:
     client = fake_favro(_two_board_card(), _two_boards())
 
-    with pytest.raises(ValueError, match="does not say which one to move"):
+    with pytest.raises(ValueError, match="does not say which board to move"):
         card_tools.add_card_to_board(
             card="#42", to_board="b0a2", ctx=_no_ctx(), mode="move"
         )
@@ -363,109 +362,6 @@ def test_add_card_to_board_move_by_card_id_needs_no_source_board(
     assert client.update_calls[0]["card_id"] == "c0ffee01"
 
 
-def test_add_card_to_board_move_runs_when_the_destination_already_has_an_instance(
-    fake_favro: FakeFavro,
-) -> None:
-    """A copy would be skipped here; a move must not be — it has a source to clear."""
-    client = fake_favro(_two_board_card(), _two_boards())
-
-    result = card_tools.add_card_to_board(
-        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="move"
-    )
-
-    assert client.update_calls[0]["drag_mode"] == "move"
-    # An instance was on the destination before the call, and the move cleared
-    # the source. Both flags describe what happened, not what was asked for.
-    assert result["already_present"] is True
-    assert result["kept_on_source_board"] is False
-
-
-def test_add_card_to_board_move_is_skipped_when_the_source_is_the_destination(
-    fake_favro: FakeFavro,
-) -> None:
-    client = fake_favro(_two_board_card(), _two_boards())
-
-    result = card_tools.add_card_to_board(
-        card="c0ffee02", to_board="b0a2", ctx=_no_ctx(), mode="move"
-    )
-
-    assert client.update_calls == []
-    assert result["already_present"] is True
-    # Nothing was written, so the card is still where it was — a move that found
-    # nothing to relocate must not report itself as having relocated something.
-    assert result["kept_on_source_board"] is True
-
-
-def _column(column_id: str, widget_common_id: str, name: str) -> Column:
-    return Column.model_validate(
-        {
-            "columnId": column_id,
-            "organizationId": "org-1",
-            "widgetCommonId": widget_common_id,
-            "name": name,
-            "position": 0.0,
-        }
-    )
-
-
-def _kanban_columns() -> list[Column]:
-    return [_column("col-doing", "b0a2", "In progress")]
-
-
-def test_add_card_to_board_applies_a_column_to_a_card_already_there(
-    fake_favro: FakeFavro,
-) -> None:
-    """The no-op branch must not swallow a requested placement."""
-    client = fake_favro(_two_board_card(), _two_boards(), _kanban_columns())
-
-    result = card_tools.add_card_to_board(
-        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), column="In progress"
-    )
-
-    # Written against the instance on the destination, not the source one.
-    assert client.update_calls[0]["card_id"] == "c0ffee02"
-    assert client.update_calls[0]["column_id"] == "col-doing"
-    # Placement on a single board carries no dragMode — the shape move_card uses.
-    assert "drag_mode" not in client.update_calls[0]
-    assert result["already_present"] is True
-    assert result["placement_updated"] is True
-    assert result["column_name"] == "In progress"
-    # A placement within one board relocates nothing off any board.
-    assert result["kept_on_source_board"] is True
-
-
-def test_add_card_to_board_move_applies_a_column_when_source_is_the_destination(
-    fake_favro: FakeFavro,
-) -> None:
-    client = fake_favro(_two_board_card(), _two_boards(), _kanban_columns())
-
-    result = card_tools.add_card_to_board(
-        card="c0ffee02",
-        to_board="b0a2",
-        ctx=_no_ctx(),
-        mode="move",
-        column="In progress",
-    )
-
-    assert client.update_calls[0]["card_id"] == "c0ffee02"
-    assert client.update_calls[0]["column_id"] == "col-doing"
-    assert result["placement_updated"] is True
-
-
-def test_add_card_to_board_reports_no_placement_when_none_was_asked_for(
-    fake_favro: FakeFavro,
-) -> None:
-    client = fake_favro(_two_board_card(), _two_boards(), _kanban_columns())
-
-    result = card_tools.add_card_to_board(
-        card="c0ffee01", to_board="b0a2", ctx=_no_ctx()
-    )
-
-    assert client.update_calls == []
-    assert result["already_present"] is True
-    assert result["placement_updated"] is False
-
-
 def test_add_card_to_board_move_refuses_a_source_board_the_card_is_not_on(
     fake_favro: FakeFavro,
 ) -> None:
@@ -484,14 +380,32 @@ def test_add_card_to_board_move_refuses_a_source_board_the_card_is_not_on(
     assert client.update_calls == []
 
 
+def test_add_card_to_board_move_refuses_a_mismatched_board_from_set_board(
+    fake_favro: FakeFavro,
+) -> None:
+    """A board selected with set_board has to agree too, not just an explicit one."""
+    client = fake_favro(
+        _two_board_card(),
+        [*_two_boards(), _widget("b0a3", "Ops")],
+        selected_board="b0a1",
+    )
+
+    with pytest.raises(ValueError, match="board you did not ask for"):
+        card_tools.add_card_to_board(
+            card="c0ffee02",  # the instance on b0a2, not the selected b0a1
+            to_board="b0a3",
+            ctx=_no_ctx(),
+            mode="move",
+        )
+
+    assert client.update_calls == []
+
+
 def test_add_card_to_board_copy_tolerates_a_mismatched_source_board(
     fake_favro: FakeFavro,
 ) -> None:
     """A copy lands on the destination whichever instance is sent, so no refusal."""
-    client = fake_favro(
-        [_card("c0ffee01", "b0a1"), _card("c0ffee02", "b0a2")],
-        [_widget("b0a1", "Planning"), _widget("b0a2", "Kanban"), _widget("b0a3", "Ops")],
-    )
+    client = fake_favro(_two_board_card(), [*_two_boards(), _widget("b0a3", "Ops")])
 
     card_tools.add_card_to_board(
         card="c0ffee02", to_board="b0a3", ctx=_no_ctx(), mode="copy", board="b0a1"
@@ -500,14 +414,107 @@ def test_add_card_to_board_copy_tolerates_a_mismatched_source_board(
     assert client.update_calls[0]["drag_mode"] == "commit"
 
 
-def test_add_card_to_board_move_allows_a_source_board_that_matches(
+def test_add_card_to_board_resolves_placement_on_the_destination_board(
     fake_favro: FakeFavro,
 ) -> None:
+    client = fake_favro(
+        [_card("c0ffee01", "b0a1")],
+        _two_boards(),
+        [_column("col-doing", "b0a2", "In progress")],
+    )
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), column="In progress"
+    )
+
+    assert client.update_calls[0]["column_id"] == "col-doing"
+    assert result["column_name"] == "In progress"
+    assert "In progress" in str(result["message"])
+
+
+def test_add_card_to_board_copy_still_commits_when_already_on_the_destination(
+    fake_favro: FakeFavro,
+) -> None:
+    """The removed short-circuit's case: the copy is sent, not skipped.
+
+    Favro models one ``cardId`` per widget per ``cardCommonId``, so ``commit``
+    against a board that already holds an instance should be a no-op rather
+    than a duplicate. Pinned here so a re-introduced short-circuit shows up as
+    a behaviour change.
+    """
     client = fake_favro(_two_board_card(), _two_boards())
 
-    card_tools.add_card_to_board(
-        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="move", board="b0a1"
+    result = card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="copy"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "commit"
+    # Sent against the source instance; Favro decides what the destination
+    # instance ends up being.
+    assert client.update_calls[0]["card_id"] == "c0ffee01"
+    assert client.update_calls[0]["widget_common_id"] == "b0a2"
+    assert result["board_id"] == "b0a2"
+    assert result["source_board_id"] == "b0a1"
+
+
+def test_add_card_to_board_move_to_the_board_the_card_is_already_on(
+    fake_favro: FakeFavro,
+) -> None:
+    """Source equals destination: the request goes out rather than being skipped."""
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee02", to_board="b0a2", ctx=_no_ctx(), mode="move"
     )
 
     assert client.update_calls[0]["drag_mode"] == "move"
-    assert client.update_calls[0]["card_id"] == "c0ffee01"
+    assert client.update_calls[0]["card_id"] == "c0ffee02"
+    assert client.update_calls[0]["widget_common_id"] == "b0a2"
+    # Nowhere to move it off, so the source board is the destination.
+    assert result["source_board_id"] == "b0a2"
+
+
+def test_add_card_to_board_applies_a_lane_and_names_it(fake_favro: FakeFavro) -> None:
+    """The message used to drop the lane it had just applied."""
+    client = fake_favro(
+        [_card("c0ffee01", "b0a1"), _lane("lane-platform", "b0a2", "Platform")],
+        _two_boards(),
+        [_column("col-doing", "b0a2", "In progress")],
+    )
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee01",
+        to_board="b0a2",
+        ctx=_no_ctx(),
+        column="In progress",
+        lane="Platform",
+    )
+
+    # A lane's id is its cardId, not a columnId.
+    assert client.update_calls[0]["lane_id"] == "lane-platform"
+    assert result["lane_name"] == "Platform"
+    assert "column 'In progress' and lane 'Platform'" in str(result["message"])
+
+
+def test_add_card_to_board_move_refuses_a_card_id_that_parses_as_a_sequential_id(
+    fake_favro: FakeFavro,
+) -> None:
+    """A `prefix-123` card id resolves via the sequential path, not the id path.
+
+    ``CardResolver.resolve`` tries ``parse_sequential_id`` before a direct id
+    lookup, so ``card-1`` is read as #1 and lands on an arbitrary instance. If
+    that instance's own id happens to be ``card-1`` too, comparing the two
+    strings would wrongly conclude the caller pinned an instance. Favro does
+    not issue ids of that shape, but the guard should not depend on that.
+    """
+    client = fake_favro(
+        [_card("card-1", "b0a1", sequential_id=1), _card("card-9", "b0a2", 1)],
+        _two_boards(),
+    )
+
+    with pytest.raises(ValueError, match="does not say which board to move"):
+        card_tools.add_card_to_board(
+            card="card-1", to_board="b0a2", ctx=_no_ctx(), mode="move"
+        )
+
+    assert client.update_calls == []

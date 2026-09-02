@@ -833,21 +833,11 @@ def add_card_to_board(
 
     ``mode="move"`` relocates the card instead — it stops appearing on the board
     it came from. Because that decides which board loses the card, a move needs
-    an unambiguous source: pass the board-specific ``card`` id, or name the
-    ``board`` it is moving from. A sequential id or a name on its own resolves to
-    whichever instance the API happens to return, which is not good enough here.
-
-    A copy is skipped when the card already has an instance on ``to_board``,
-    rather than committing a second one. A ``column`` or ``lane`` asked for at
-    the same time is still applied to that instance, so the argument is never
-    quietly dropped.
-
-    Two flags in the result describe what actually happened, rather than what
-    was asked for: ``already_present`` is whether an instance was on
-    ``to_board`` before the call, and ``kept_on_source_board`` is whether the
-    card still appears where it did — true for every copy, and true for a move
-    that turned out to have nothing to relocate. ``placement_updated`` says
-    whether a column or lane was applied.
+    to know its source: pass the board-specific ``card`` id, or name the
+    ``board`` it is on now. A sequential id on its own resolves to whichever
+    instance the API happens to return, which is not good enough here. (A name
+    always needs a ``board`` anyway — ``CardResolver`` will not search without
+    one.)
 
     Args:
         card: Card ID, sequential ID (#123), or name
@@ -859,7 +849,8 @@ def add_card_to_board(
             pin down the source instance when moving)
 
     Returns:
-        The destination instance, including the card_id it was given there.
+        The card as Favro returned it, plus the destination board and the
+        source board the card came from.
     """
     favro_ctx = get_favro_context(ctx)
     favro_ctx.require_org()
@@ -871,48 +862,37 @@ def add_card_to_board(
         c = CardResolver(client).resolve(card, board_id=source_board_id)
         dest = BoardResolver(client).resolve(to_board)
 
-        # Every instance of this card. ``unique`` has to be off: on by default it
-        # collapses them down to one, which is the thing being counted here.
-        instances = client.get_cards(card_sequential_id=c.sequential_id, unique=False)
-        boards_held = {i.widget_common_id for i in instances if i.widget_common_id}
-
-        # CardResolver tries a sequential id before a card id, and that lookup
-        # takes ``unique``'s default — so for a card on several boards it returns
-        # an arbitrary instance. Harmless when copying; when moving it picks the
-        # board that loses the card, so refuse rather than guess.
-        if (
-            mode == "move"
-            and card != c.card_id
-            and source_board_id is None
-            and len(boards_held) > 1
-        ):
-            raise ValueError(
-                f"Card '{c.name}' has instances on {len(boards_held)} boards, so "
-                f"'{card}' does not say which one to move. Pass board=..., select "
-                "a board with set_board, or pass the board-specific card id."
+        # A move has to know which instance it is relocating: that is the board
+        # that loses the card. The resolved card already says which one it is.
+        if mode == "move":
+            # A sequential id resolves through get_cards, which takes ``unique``'s
+            # default and so returns an arbitrary instance of a multi-board card.
+            # An exact card id names one instance outright, and a name cannot get
+            # this far without a board. ``resolve`` tries the sequential form
+            # first, and `prefix-123` parses as one — so a card id alone does not
+            # prove the id path was taken, and the same question has to be asked
+            # of the identifier the caller wrote.
+            resolved_by_card_id = (
+                card == c.card_id and CardResolver.parse_sequential_id(card) is None
             )
+            if source_board_id is None and not resolved_by_card_id:
+                raise ValueError(
+                    f"'{card}' does not say which board to move card '{c.name}' "
+                    "off. Pass board=..., select one with set_board, or pass the "
+                    "board-specific card id."
+                )
+            # CardResolver's direct-id path ignores board_id, so an id from one
+            # board and a source board naming another both resolve — to the id's
+            # instance. Honouring the id would take the card off a board the
+            # caller never named.
+            if source_board_id is not None and c.widget_common_id != source_board_id:
+                raise ValueError(
+                    f"Card '{c.name}' is on board {c.widget_common_id}, but the "
+                    f"source board is {source_board_id}. Moving would take it off "
+                    "a board you did not ask for. Pass that board's own card id, "
+                    "or point board= at the board the card is really on."
+                )
 
-        # CardResolver's direct-id path ignores board_id, so a card id from one
-        # board and board= naming another both resolve — to the id's instance. The
-        # two disagree about which board loses the card, and honouring the id
-        # silently would move it off a board the caller did not name. Only checked
-        # for a move: a copy lands on the destination whichever instance is sent,
-        # so there the source board has no bearing on the outcome.
-        if (
-            mode == "move"
-            and board is not None
-            and source_board_id is not None
-            and c.widget_common_id != source_board_id
-        ):
-            raise ValueError(
-                f"Card '{c.name}' resolved to its instance on board "
-                f"{c.widget_common_id}, but board='{board}' names "
-                f"{source_board_id}. Moving would take it off a board you did not "
-                "ask for. Drop board=, or pass that board's own card id."
-            )
-
-        # Resolved before the short-circuit below, because that branch has to
-        # apply them too rather than drop them.
         col = None
         if column:
             col = ColumnResolver(client).resolve(column, board_id=dest.widget_common_id)
@@ -920,73 +900,6 @@ def add_card_to_board(
         lane_obj = None
         if lane:
             lane_obj = LaneResolver(client).resolve(lane, board_id=dest.widget_common_id)
-
-        present = next(
-            (i for i in instances if i.widget_common_id == dest.widget_common_id),
-            None,
-        )
-        # An instance is on the destination already: a copy must not add a second
-        # one, and a move whose source *is* that instance has nowhere to go. The
-        # cross-board step is settled either way — but a column or lane the caller
-        # asked for still has to land, on that instance, or the argument goes
-        # nowhere and the caller is told everything is fine. Placement on one board
-        # with no dragMode is the request move_card already makes.
-        if present is not None and (mode == "copy" or present.card_id == c.card_id):
-            if col is None and lane_obj is None:
-                return {
-                    "message": (
-                        f"Card '{c.name}' is already on board '{dest.name}' — "
-                        "left as it is"
-                    ),
-                    "card_id": present.card_id,
-                    "card_common_id": c.card_common_id,
-                    "board_id": dest.widget_common_id,
-                    "board_name": dest.name,
-                    "column_id": None,
-                    "column_name": None,
-                    "lane_id": None,
-                    "lane_name": None,
-                    # Nothing was written, so nothing left any board — whatever
-                    # the mode. Saying otherwise would describe a move that did
-                    # not happen.
-                    "kept_on_source_board": True,
-                    "already_present": True,
-                    "placement_updated": False,
-                }
-
-            repositioned = client.update_card(
-                card_id=present.card_id,
-                widget_common_id=dest.widget_common_id,
-                column_id=col.column_id if col else None,
-                lane_id=lane_obj.card_id if lane_obj else None,
-            )
-            landed = " and ".join(
-                part
-                for part in (
-                    f"column '{col.name}'" if col else "",
-                    f"lane '{lane_obj.name}'" if lane_obj else "",
-                )
-                if part
-            )
-            return {
-                "message": (
-                    f"Card '{repositioned.name}' was already on board "
-                    f"'{dest.name}' — moved it to {landed}"
-                ),
-                "card_id": present.card_id,
-                "card_common_id": c.card_common_id,
-                "board_id": dest.widget_common_id,
-                "board_name": dest.name,
-                "column_id": col.column_id if col else None,
-                "column_name": col.name if col else None,
-                "lane_id": lane_obj.card_id if lane_obj else None,
-                "lane_name": lane_obj.name if lane_obj else None,
-                # A placement within the destination board; no instance moved
-                # off anywhere.
-                "kept_on_source_board": True,
-                "already_present": True,
-                "placement_updated": True,
-            }
 
         updated = client.update_card(
             card_id=c.card_id,
@@ -996,23 +909,29 @@ def add_card_to_board(
             drag_mode="commit" if mode == "copy" else "move",
         )
 
+        landed = " and ".join(
+            part
+            for part in (
+                f"column '{col.name}'" if col else "",
+                f"lane '{lane_obj.name}'" if lane_obj else "",
+            )
+            if part
+        )
         verb = "Copied" if mode == "copy" else "Moved"
-        landed = f" into column '{col.name}'" if col else ""
         return {
-            "message": f"{verb} card '{updated.name}' to board '{dest.name}'{landed}",
+            "message": (
+                f"{verb} card '{updated.name}' to board '{dest.name}'"
+                + (f", into {landed}" if landed else "")
+            ),
             "card_id": updated.card_id,
             "card_common_id": updated.card_common_id,
             "board_id": dest.widget_common_id,
             "board_name": dest.name,
+            "source_board_id": c.widget_common_id,
             "column_id": col.column_id if col else None,
             "column_name": col.name if col else None,
             "lane_id": lane_obj.card_id if lane_obj else None,
             "lane_name": lane_obj.name if lane_obj else None,
-            "kept_on_source_board": mode == "copy",
-            # A move from another board runs even when the destination already
-            # held an instance, so this is not always False.
-            "already_present": present is not None,
-            "placement_updated": col is not None or lane_obj is not None,
         }
 
 
