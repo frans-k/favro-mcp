@@ -475,6 +475,7 @@ class FavroClient:
         widget_common_id: str | None = None,
         column_id: str | None = None,
         lane_id: str | None = None,
+        drag_mode: str | None = None,
         parent_card_id: str | None = None,
         add_tags: list[str] | None = None,
         remove_tags: list[str] | None = None,
@@ -489,6 +490,11 @@ class FavroClient:
         """Update a card.
 
         Args:
+            drag_mode: How ``widget_common_id`` is applied. "commit" (Favro's
+                default) adds an instance of the card on the target widget and
+                leaves existing instances alone; "move" relocates the card, so
+                it stops appearing on the board it came from. Only meaningful
+                together with ``widget_common_id``.
             custom_fields: List of custom field updates. Each dict should contain
                 'customFieldId' and the appropriate value field for the field type:
                 - Text: {'customFieldId': '...', 'value': 'text'}
@@ -511,6 +517,8 @@ class FavroClient:
             data["columnId"] = column_id
         if lane_id is not None:
             data["laneId"] = lane_id
+        if drag_mode is not None:
+            data["dragMode"] = drag_mode
         if parent_card_id is not None:
             data["parentCardId"] = parent_card_id
         if add_tags:

@@ -1,6 +1,6 @@
 """Card tools for Favro MCP."""
 
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import Context
 
@@ -803,6 +803,131 @@ def move_card(
         return {
             "message": f"Moved card '{updated.name}' to {destination}",
             "card_id": updated.card_id,
+            "column_id": col.column_id if col else None,
+            "column_name": col.name if col else None,
+            "lane_id": lane_obj.card_id if lane_obj else None,
+            "lane_name": lane_obj.name if lane_obj else None,
+        }
+
+
+@mcp.tool
+def add_card_to_board(
+    card: str,
+    to_board: str,
+    ctx: Context,
+    column: str | None = None,
+    lane: str | None = None,
+    mode: Literal["copy", "move"] = "copy",
+    board: str | None = None,
+) -> dict[str, Any]:
+    """Put an existing card on another board, as a copy or as a move.
+
+    A Favro card can live on several boards at once: the instances share one
+    ``cardCommonId`` but each has its own ``cardId``, column and position.
+
+    ``mode="copy"`` (the default) gives the card an instance on ``to_board`` and
+    leaves the original where it is. Both instances are the same card, so a
+    comment, a description edit or a tasklist change shows on both, while the
+    column and position are per-board. Use it when a planning board should keep
+    tracking work that a delivery board is now running.
+
+    ``mode="move"`` relocates the card instead — it stops appearing on the board
+    it came from. Because that decides which board loses the card, a move needs
+    to know its source: pass the board-specific ``card`` id, or name the
+    ``board`` it is on now. A sequential id on its own resolves to whichever
+    instance the API happens to return, which is not good enough here. (A name
+    always needs a ``board`` anyway — ``CardResolver`` will not search without
+    one.)
+
+    Args:
+        card: Card ID, sequential ID (#123), or name
+        to_board: Destination board ID or name
+        column: Column on the destination board; Favro chooses one if omitted
+        lane: Swimlane on the destination board, for boards that use them
+        mode: "copy" to keep the card where it is, "move" to relocate it
+        board: The board the card is on now (needed for name lookups, and to
+            pin down the source instance when moving)
+
+    Returns:
+        The card as Favro returned it, plus the destination board and the
+        source board the card came from.
+    """
+    favro_ctx = get_favro_context(ctx)
+    favro_ctx.require_org()
+    with favro_ctx.get_client() as client:
+        source_board_id = board or favro_ctx.current_board_id
+        if board:
+            source_board_id = BoardResolver(client).resolve(board).widget_common_id
+
+        c = CardResolver(client).resolve(card, board_id=source_board_id)
+        dest = BoardResolver(client).resolve(to_board)
+
+        # A move has to know which instance it is relocating: that is the board
+        # that loses the card. The resolved card already says which one it is.
+        if mode == "move":
+            # A sequential id resolves through get_cards, which takes ``unique``'s
+            # default and so returns an arbitrary instance of a multi-board card.
+            # An exact card id names one instance outright, and a name cannot get
+            # this far without a board. ``resolve`` tries the sequential form
+            # first, and `prefix-123` parses as one — so a card id alone does not
+            # prove the id path was taken, and the same question has to be asked
+            # of the identifier the caller wrote.
+            resolved_by_card_id = (
+                card == c.card_id and CardResolver.parse_sequential_id(card) is None
+            )
+            if source_board_id is None and not resolved_by_card_id:
+                raise ValueError(
+                    f"'{card}' does not say which board to move card '{c.name}' "
+                    "off. Pass board=..., select one with set_board, or pass the "
+                    "board-specific card id."
+                )
+            # CardResolver's direct-id path ignores board_id, so an id from one
+            # board and a source board naming another both resolve — to the id's
+            # instance. Honouring the id would take the card off a board the
+            # caller never named.
+            if source_board_id is not None and c.widget_common_id != source_board_id:
+                raise ValueError(
+                    f"Card '{c.name}' is on board {c.widget_common_id}, but the "
+                    f"source board is {source_board_id}. Moving would take it off "
+                    "a board you did not ask for. Pass that board's own card id, "
+                    "or point board= at the board the card is really on."
+                )
+
+        col = None
+        if column:
+            col = ColumnResolver(client).resolve(column, board_id=dest.widget_common_id)
+
+        lane_obj = None
+        if lane:
+            lane_obj = LaneResolver(client).resolve(lane, board_id=dest.widget_common_id)
+
+        updated = client.update_card(
+            card_id=c.card_id,
+            widget_common_id=dest.widget_common_id,
+            column_id=col.column_id if col else None,
+            lane_id=lane_obj.card_id if lane_obj else None,
+            drag_mode="commit" if mode == "copy" else "move",
+        )
+
+        landed = " and ".join(
+            part
+            for part in (
+                f"column '{col.name}'" if col else "",
+                f"lane '{lane_obj.name}'" if lane_obj else "",
+            )
+            if part
+        )
+        verb = "Copied" if mode == "copy" else "Moved"
+        return {
+            "message": (
+                f"{verb} card '{updated.name}' to board '{dest.name}'"
+                + (f", into {landed}" if landed else "")
+            ),
+            "card_id": updated.card_id,
+            "card_common_id": updated.card_common_id,
+            "board_id": dest.widget_common_id,
+            "board_name": dest.name,
+            "source_board_id": c.widget_common_id,
             "column_id": col.column_id if col else None,
             "column_name": col.name if col else None,
             "lane_id": lane_obj.card_id if lane_obj else None,
