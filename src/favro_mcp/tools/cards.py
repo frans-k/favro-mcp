@@ -868,8 +868,14 @@ def add_card_to_board(
             # A sequential id resolves through get_cards, which takes ``unique``'s
             # default and so returns an arbitrary instance of a multi-board card.
             # An exact card id names one instance outright, and a name cannot get
-            # this far without a board.
-            if source_board_id is None and card != c.card_id:
+            # this far without a board. ``resolve`` tries the sequential form
+            # first, and `prefix-123` parses as one — so a card id alone does not
+            # prove the id path was taken, and the same question has to be asked
+            # of the identifier the caller wrote.
+            resolved_by_card_id = (
+                card == c.card_id and CardResolver.parse_sequential_id(card) is None
+            )
+            if source_board_id is None and not resolved_by_card_id:
                 raise ValueError(
                     f"'{card}' does not say which board to move card '{c.name}' "
                     "off. Pass board=..., select one with set_board, or pass the "

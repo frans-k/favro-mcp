@@ -55,4 +55,6 @@ src/favro_mcp/
   arbitrary instance — a card id names one outright
 - `CardResolver` reads `prefix-123` as sequential id `#123`, so an identifier
   like `card-1` resolves as `#1` rather than as a card id — worth knowing when
-  writing fixtures
+  writing fixtures. `CardResolver.parse_sequential_id` is public so callers can
+  ask which path `resolve` will take; comparing the identifier to the resolved
+  `cardId` does not answer it

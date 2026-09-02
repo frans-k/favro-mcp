@@ -494,3 +494,27 @@ def test_add_card_to_board_applies_a_lane_and_names_it(fake_favro: FakeFavro) ->
     assert client.update_calls[0]["lane_id"] == "lane-platform"
     assert result["lane_name"] == "Platform"
     assert "column 'In progress' and lane 'Platform'" in str(result["message"])
+
+
+def test_add_card_to_board_move_refuses_a_card_id_that_parses_as_a_sequential_id(
+    fake_favro: FakeFavro,
+) -> None:
+    """A `prefix-123` card id resolves via the sequential path, not the id path.
+
+    ``CardResolver.resolve`` tries ``parse_sequential_id`` before a direct id
+    lookup, so ``card-1`` is read as #1 and lands on an arbitrary instance. If
+    that instance's own id happens to be ``card-1`` too, comparing the two
+    strings would wrongly conclude the caller pinned an instance. Favro does
+    not issue ids of that shape, but the guard should not depend on that.
+    """
+    client = fake_favro(
+        [_card("card-1", "b0a1", sequential_id=1), _card("card-9", "b0a2", 1)],
+        _two_boards(),
+    )
+
+    with pytest.raises(ValueError, match="does not say which board to move"):
+        card_tools.add_card_to_board(
+            card="card-1", to_board="b0a2", ctx=_no_ctx(), mode="move"
+        )
+
+    assert client.update_calls == []
