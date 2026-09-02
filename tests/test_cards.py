@@ -177,9 +177,30 @@ class _FakeClient:
         raise ValueError(f"no such widget: {widget_id}")
 
     def get_cards(self, **kwargs: Any) -> list[Card]:
+        """Filters the way the real endpoint does, ``unique`` included.
+
+        ``unique`` defaults to True on the client, and that default is what
+        makes a multi-board card collapse to one arbitrary instance — the
+        behaviour the source-ambiguity guard exists for. A fake that ignored it
+        could not reproduce that.
+        """
         self.get_cards_calls.append(kwargs)
         seq: int | None = kwargs.get("card_sequential_id")
-        return [c for c in self._instances if seq is None or c.sequential_id == seq]
+        widget: str | None = kwargs.get("widget_common_id")
+        unique: bool = kwargs.get("unique", True)
+
+        found = [c for c in self._instances if seq is None or c.sequential_id == seq]
+        if widget is not None:
+            found = [c for c in found if c.widget_common_id == widget]
+        if unique:
+            seen: set[str] = set()
+            deduped: list[Card] = []
+            for c in found:
+                if c.card_common_id not in seen:
+                    seen.add(c.card_common_id)
+                    deduped.append(c)
+            found = deduped
+        return found
 
     def update_card(self, **kwargs: Any) -> Card:
         self.update_calls.append(kwargs)
@@ -272,3 +293,78 @@ def test_add_card_to_board_leaves_a_card_that_is_already_there(
     assert client.update_calls == []
     assert result["already_present"] is True
     assert result["card_id"] == "c0ffee02"
+
+
+def _two_board_card() -> list[Card]:
+    """One card with an instance on each of two boards."""
+    return [_card("c0ffee01", "b0a1"), _card("c0ffee02", "b0a2")]
+
+
+def _two_boards() -> list[Widget]:
+    return [_widget("b0a1", "Planning"), _widget("b0a2", "Kanban")]
+
+
+def test_add_card_to_board_move_refuses_an_ambiguous_source(
+    fake_favro: FakeFavro,
+) -> None:
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    with pytest.raises(ValueError, match="does not say which one to move"):
+        card_tools.add_card_to_board(
+            card="#42", to_board="b0a2", ctx=_no_ctx(), mode="move"
+        )
+
+    assert client.update_calls == []
+
+
+def test_add_card_to_board_move_takes_a_sequential_id_with_a_source_board(
+    fake_favro: FakeFavro,
+) -> None:
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    card_tools.add_card_to_board(
+        card="#42", to_board="b0a2", ctx=_no_ctx(), mode="move", board="b0a1"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "move"
+    assert client.update_calls[0]["card_id"] == "c0ffee01"
+
+
+def test_add_card_to_board_move_by_card_id_needs_no_source_board(
+    fake_favro: FakeFavro,
+) -> None:
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="move"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "move"
+    assert client.update_calls[0]["card_id"] == "c0ffee01"
+
+
+def test_add_card_to_board_move_runs_when_the_destination_already_has_an_instance(
+    fake_favro: FakeFavro,
+) -> None:
+    """A copy would be skipped here; a move must not be — it has a source to clear."""
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="move"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "move"
+    assert result["already_present"] is False
+
+
+def test_add_card_to_board_move_is_skipped_when_the_source_is_the_destination(
+    fake_favro: FakeFavro,
+) -> None:
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee02", to_board="b0a2", ctx=_no_ctx(), mode="move"
+    )
+
+    assert client.update_calls == []
+    assert result["already_present"] is True

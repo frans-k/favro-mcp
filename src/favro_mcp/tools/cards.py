@@ -832,7 +832,13 @@ def add_card_to_board(
     tracking work that a delivery board is now running.
 
     ``mode="move"`` relocates the card instead — it stops appearing on the board
-    it came from.
+    it came from. Because that decides which board loses the card, a move needs
+    an unambiguous source: pass the board-specific ``card`` id, or name the
+    ``board`` it is moving from. A sequential id or a name on its own resolves to
+    whichever instance the API happens to return, which is not good enough here.
+
+    A copy is skipped when the card already has an instance on ``to_board``,
+    rather than committing a second one.
 
     Args:
         card: Card ID, sequential ID (#123), or name
@@ -840,7 +846,8 @@ def add_card_to_board(
         column: Column on the destination board; Favro chooses one if omitted
         lane: Swimlane on the destination board, for boards that use them
         mode: "copy" to keep the card where it is, "move" to relocate it
-        board: The board the card is on now (needed for name lookups)
+        board: The board the card is on now (needed for name lookups, and to
+            pin down the source instance when moving)
 
     Returns:
         The destination instance, including the card_id it was given there.
@@ -855,15 +862,35 @@ def add_card_to_board(
         c = CardResolver(client).resolve(card, board_id=source_board_id)
         dest = BoardResolver(client).resolve(to_board)
 
-        # Every instance of this card, so an existing one on the destination is
-        # not turned into a confusing second copy. ``unique`` has to be off:
-        # on by default it collapses the instances down to one.
+        # Every instance of this card. ``unique`` has to be off: on by default it
+        # collapses them down to one, which is the thing being counted here.
         instances = client.get_cards(card_sequential_id=c.sequential_id, unique=False)
+        boards_held = {i.widget_common_id for i in instances if i.widget_common_id}
+
+        # CardResolver tries a sequential id before a card id, and that lookup
+        # takes ``unique``'s default — so for a card on several boards it returns
+        # an arbitrary instance. Harmless when copying; when moving it picks the
+        # board that loses the card, so refuse rather than guess.
+        if (
+            mode == "move"
+            and card != c.card_id
+            and source_board_id is None
+            and len(boards_held) > 1
+        ):
+            raise ValueError(
+                f"Card '{c.name}' has instances on {len(boards_held)} boards, so "
+                f"'{card}' does not say which one to move. Pass board=..., select "
+                "a board with set_board, or pass the board-specific card id."
+            )
+
         present = next(
             (i for i in instances if i.widget_common_id == dest.widget_common_id),
             None,
         )
-        if present is not None:
+        # Skip a copy that would be a second instance, and skip a move whose
+        # source instance is already the one on the destination. A move from a
+        # different board still runs, even if an instance is over there already.
+        if present is not None and (mode == "copy" or present.card_id == c.card_id):
             return {
                 "message": (
                     f"Card '{c.name}' is already on board '{dest.name}' — left as it is"
