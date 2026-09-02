@@ -48,8 +48,11 @@ src/favro_mcp/
 - A card can live on several boards at once. The instances share one
   `cardCommonId`; each has its own `cardId`, column and position. `PUT /cards`
   with `dragMode: "commit"` (the API's default) adds an instance on the target
-  board, `"move"` relocates the card — see `add_card_to_board`. `get_cards` must
-  be called with `unique=False` to see the instances separately
+  board, `"move"` relocates the card — see `add_card_to_board`. `get_cards`
+  defaults to `unique=True`, which collapses the instances to one arbitrary
+  entry; pass `unique=False` to see them separately. `CardResolver`'s sequential
+  id lookup takes that default, so `#123` for a multi-board card resolves to an
+  arbitrary instance — a card id names one outright
 - `CardResolver` reads `prefix-123` as sequential id `#123`, so an identifier
   like `card-1` resolves as `#1` rather than as a card id — worth knowing when
   writing fixtures
