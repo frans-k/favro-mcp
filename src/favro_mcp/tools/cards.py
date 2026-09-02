@@ -834,8 +834,10 @@ def add_card_to_board(
     ``mode="move"`` relocates the card instead — it stops appearing on the board
     it came from. Because that decides which board loses the card, a move needs
     to know its source: pass the board-specific ``card`` id, or name the
-    ``board`` it is on now. A sequential id or a name on its own resolves to
-    whichever instance the API happens to return, which is not good enough here.
+    ``board`` it is on now. A sequential id on its own resolves to whichever
+    instance the API happens to return, which is not good enough here. (A name
+    always needs a ``board`` anyway — ``CardResolver`` will not search without
+    one.)
 
     Args:
         card: Card ID, sequential ID (#123), or name
@@ -863,9 +865,10 @@ def add_card_to_board(
         # A move has to know which instance it is relocating: that is the board
         # that loses the card. The resolved card already says which one it is.
         if mode == "move":
-            # A sequential id or name resolves through get_cards, which takes
-            # ``unique``'s default and so returns an arbitrary instance of a
-            # multi-board card. An exact card id names one instance outright.
+            # A sequential id resolves through get_cards, which takes ``unique``'s
+            # default and so returns an arbitrary instance of a multi-board card.
+            # An exact card id names one instance outright, and a name cannot get
+            # this far without a board.
             if source_board_id is None and card != c.card_id:
                 raise ValueError(
                     f"'{card}' does not say which board to move card '{c.name}' "

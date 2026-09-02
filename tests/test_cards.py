@@ -150,6 +150,12 @@ def _widget(widget_common_id: str, name: str) -> Widget:
     )
 
 
+def _lane(card_id: str, widget_common_id: str, name: str) -> Card:
+    """A swimlane — Favro models them as cards flagged ``isLane``."""
+    lane = _card(card_id, widget_common_id, sequential_id=0)
+    return lane.model_copy(update={"is_lane": True, "name": name})
+
+
 def _column(column_id: str, widget_common_id: str, name: str) -> Column:
     return Column.model_validate(
         {
@@ -202,6 +208,11 @@ class _FakeClient:
 
     def get_columns(self, board_id: str) -> list[Column]:
         return [col for col in self._columns if col.widget_common_id == board_id]
+
+    def get_lanes(self, board_id: str) -> list[Card]:
+        return [
+            c for c in self._instances if c.is_lane and c.widget_common_id == board_id
+        ]
 
     def get_cards(self, **kwargs: Any) -> list[Card]:
         """Filters the way the real endpoint does, ``unique`` included.
@@ -419,3 +430,67 @@ def test_add_card_to_board_resolves_placement_on_the_destination_board(
     assert client.update_calls[0]["column_id"] == "col-doing"
     assert result["column_name"] == "In progress"
     assert "In progress" in str(result["message"])
+
+
+def test_add_card_to_board_copy_still_commits_when_already_on_the_destination(
+    fake_favro: FakeFavro,
+) -> None:
+    """The removed short-circuit's case: the copy is sent, not skipped.
+
+    Favro models one ``cardId`` per widget per ``cardCommonId``, so ``commit``
+    against a board that already holds an instance should be a no-op rather
+    than a duplicate. Pinned here so a re-introduced short-circuit shows up as
+    a behaviour change.
+    """
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="copy"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "commit"
+    # Sent against the source instance; Favro decides what the destination
+    # instance ends up being.
+    assert client.update_calls[0]["card_id"] == "c0ffee01"
+    assert client.update_calls[0]["widget_common_id"] == "b0a2"
+    assert result["board_id"] == "b0a2"
+    assert result["source_board_id"] == "b0a1"
+
+
+def test_add_card_to_board_move_to_the_board_the_card_is_already_on(
+    fake_favro: FakeFavro,
+) -> None:
+    """Source equals destination: the request goes out rather than being skipped."""
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee02", to_board="b0a2", ctx=_no_ctx(), mode="move"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "move"
+    assert client.update_calls[0]["card_id"] == "c0ffee02"
+    assert client.update_calls[0]["widget_common_id"] == "b0a2"
+    # Nowhere to move it off, so the source board is the destination.
+    assert result["source_board_id"] == "b0a2"
+
+
+def test_add_card_to_board_applies_a_lane_and_names_it(fake_favro: FakeFavro) -> None:
+    """The message used to drop the lane it had just applied."""
+    client = fake_favro(
+        [_card("c0ffee01", "b0a1"), _lane("lane-platform", "b0a2", "Platform")],
+        _two_boards(),
+        [_column("col-doing", "b0a2", "In progress")],
+    )
+
+    result = card_tools.add_card_to_board(
+        card="c0ffee01",
+        to_board="b0a2",
+        ctx=_no_ctx(),
+        column="In progress",
+        lane="Platform",
+    )
+
+    # A lane's id is its cardId, not a columnId.
+    assert client.update_calls[0]["lane_id"] == "lane-platform"
+    assert result["lane_name"] == "Platform"
+    assert "column 'In progress' and lane 'Platform'" in str(result["message"])
