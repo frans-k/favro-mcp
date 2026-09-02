@@ -374,7 +374,10 @@ def test_add_card_to_board_move_runs_when_the_destination_already_has_an_instanc
     )
 
     assert client.update_calls[0]["drag_mode"] == "move"
-    assert result["already_present"] is False
+    # An instance was on the destination before the call, and the move cleared
+    # the source. Both flags describe what happened, not what was asked for.
+    assert result["already_present"] is True
+    assert result["kept_on_source_board"] is False
 
 
 def test_add_card_to_board_move_is_skipped_when_the_source_is_the_destination(
@@ -388,6 +391,9 @@ def test_add_card_to_board_move_is_skipped_when_the_source_is_the_destination(
 
     assert client.update_calls == []
     assert result["already_present"] is True
+    # Nothing was written, so the card is still where it was — a move that found
+    # nothing to relocate must not report itself as having relocated something.
+    assert result["kept_on_source_board"] is True
 
 
 def _column(column_id: str, widget_common_id: str, name: str) -> Column:
@@ -424,6 +430,8 @@ def test_add_card_to_board_applies_a_column_to_a_card_already_there(
     assert result["already_present"] is True
     assert result["placement_updated"] is True
     assert result["column_name"] == "In progress"
+    # A placement within one board relocates nothing off any board.
+    assert result["kept_on_source_board"] is True
 
 
 def test_add_card_to_board_move_applies_a_column_when_source_is_the_destination(
@@ -456,3 +464,50 @@ def test_add_card_to_board_reports_no_placement_when_none_was_asked_for(
     assert client.update_calls == []
     assert result["already_present"] is True
     assert result["placement_updated"] is False
+
+
+def test_add_card_to_board_move_refuses_a_source_board_the_card_is_not_on(
+    fake_favro: FakeFavro,
+) -> None:
+    """CardResolver's direct-id path ignores board_id, so the two can disagree."""
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    with pytest.raises(ValueError, match="board you did not ask for"):
+        card_tools.add_card_to_board(
+            card="c0ffee02",  # the instance on b0a2
+            to_board="b0a1",
+            ctx=_no_ctx(),
+            mode="move",
+            board="b0a1",  # ...but this names b0a1 as the source
+        )
+
+    assert client.update_calls == []
+
+
+def test_add_card_to_board_copy_tolerates_a_mismatched_source_board(
+    fake_favro: FakeFavro,
+) -> None:
+    """A copy lands on the destination whichever instance is sent, so no refusal."""
+    client = fake_favro(
+        [_card("c0ffee01", "b0a1"), _card("c0ffee02", "b0a2")],
+        [_widget("b0a1", "Planning"), _widget("b0a2", "Kanban"), _widget("b0a3", "Ops")],
+    )
+
+    card_tools.add_card_to_board(
+        card="c0ffee02", to_board="b0a3", ctx=_no_ctx(), mode="copy", board="b0a1"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "commit"
+
+
+def test_add_card_to_board_move_allows_a_source_board_that_matches(
+    fake_favro: FakeFavro,
+) -> None:
+    client = fake_favro(_two_board_card(), _two_boards())
+
+    card_tools.add_card_to_board(
+        card="c0ffee01", to_board="b0a2", ctx=_no_ctx(), mode="move", board="b0a1"
+    )
+
+    assert client.update_calls[0]["drag_mode"] == "move"
+    assert client.update_calls[0]["card_id"] == "c0ffee01"

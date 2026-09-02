@@ -840,7 +840,14 @@ def add_card_to_board(
     A copy is skipped when the card already has an instance on ``to_board``,
     rather than committing a second one. A ``column`` or ``lane`` asked for at
     the same time is still applied to that instance, so the argument is never
-    quietly dropped; ``placement_updated`` in the result says whether it was.
+    quietly dropped.
+
+    Two flags in the result describe what actually happened, rather than what
+    was asked for: ``already_present`` is whether an instance was on
+    ``to_board`` before the call, and ``kept_on_source_board`` is whether the
+    card still appears where it did — true for every copy, and true for a move
+    that turned out to have nothing to relocate. ``placement_updated`` says
+    whether a column or lane was applied.
 
     Args:
         card: Card ID, sequential ID (#123), or name
@@ -885,6 +892,25 @@ def add_card_to_board(
                 "a board with set_board, or pass the board-specific card id."
             )
 
+        # CardResolver's direct-id path ignores board_id, so a card id from one
+        # board and board= naming another both resolve — to the id's instance. The
+        # two disagree about which board loses the card, and honouring the id
+        # silently would move it off a board the caller did not name. Only checked
+        # for a move: a copy lands on the destination whichever instance is sent,
+        # so there the source board has no bearing on the outcome.
+        if (
+            mode == "move"
+            and board is not None
+            and source_board_id is not None
+            and c.widget_common_id != source_board_id
+        ):
+            raise ValueError(
+                f"Card '{c.name}' resolved to its instance on board "
+                f"{c.widget_common_id}, but board='{board}' names "
+                f"{source_board_id}. Moving would take it off a board you did not "
+                "ask for. Drop board=, or pass that board's own card id."
+            )
+
         # Resolved before the short-circuit below, because that branch has to
         # apply them too rather than drop them.
         col = None
@@ -920,7 +946,10 @@ def add_card_to_board(
                     "column_name": None,
                     "lane_id": None,
                     "lane_name": None,
-                    "kept_on_source_board": mode == "copy",
+                    # Nothing was written, so nothing left any board — whatever
+                    # the mode. Saying otherwise would describe a move that did
+                    # not happen.
+                    "kept_on_source_board": True,
                     "already_present": True,
                     "placement_updated": False,
                 }
@@ -952,7 +981,9 @@ def add_card_to_board(
                 "column_name": col.name if col else None,
                 "lane_id": lane_obj.card_id if lane_obj else None,
                 "lane_name": lane_obj.name if lane_obj else None,
-                "kept_on_source_board": mode == "copy",
+                # A placement within the destination board; no instance moved
+                # off anywhere.
+                "kept_on_source_board": True,
                 "already_present": True,
                 "placement_updated": True,
             }
@@ -978,7 +1009,9 @@ def add_card_to_board(
             "lane_id": lane_obj.card_id if lane_obj else None,
             "lane_name": lane_obj.name if lane_obj else None,
             "kept_on_source_board": mode == "copy",
-            "already_present": False,
+            # A move from another board runs even when the destination already
+            # held an instance, so this is not always False.
+            "already_present": present is not None,
             "placement_updated": col is not None or lane_obj is not None,
         }
 
